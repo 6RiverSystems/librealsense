@@ -2,6 +2,10 @@
 # ubuntu 14.04 LTS cmake version 2.8.12.2
 # ubuntu 16.04 LTS cmake version 3.5.1
 cmake_minimum_required(VERSION 3.5.1)
+project(librealsense)
+
+include(../CMakeCommon.txt)
+
 include(FindCUDA)
 set(CUDA_USE_STATIC_CUDA_RUNTIME OFF CACHE INTERNAL "" FORCE)
 
@@ -12,8 +16,6 @@ endmacro()
 macro(infoValue variableName)
     info("${variableName}=\${${variableName}}")
 endmacro()
-
-
 
 ##################################################################
 # Parse librealsense version and assign it to CMake variables    #
@@ -51,7 +53,6 @@ ENDIF()
 
 IF (${ROS_BUILD_TYPE})
   message(STATUS "Building in a ROS environment")
-  project(librealsense)
 
   #################################
   # catkin specific configuration #
@@ -67,8 +68,6 @@ IF (${ROS_BUILD_TYPE})
           INCLUDE_DIRS include
           LIBRARIES realsense gpu_kernel_library
   )
-ELSE()
-  project(Realsense)
 ENDIF()
 
 if(CUDA_FOUND)
