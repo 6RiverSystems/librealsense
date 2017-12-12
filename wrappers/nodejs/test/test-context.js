@@ -4,12 +4,26 @@
 
 'use strict';
 
-/* global describe, it */
+/* global describe, it, before, after */
 const assert = require('assert');
 const EventEmitter = require('events');
-const librealsense2 = require('../index.js');
+let librealsense2;
+try {
+  librealsense2 = require('node-librealsense');
+} catch (e) {
+  librealsense2 = require('../index.js');
+}
 
 describe('Context test', function() {
+  before(function() {
+    const ctx = new librealsense2.Context();
+    const devices = ctx.queryDevices().devices;
+    assert(devices.length > 0); // Device must be connected
+  });
+
+  after(function() {
+    librealsense2.cleanup();
+  });
   it('testing constructor', () => {
     assert.doesNotThrow(() => {
       new librealsense2.Context();
@@ -55,7 +69,7 @@ describe('Context test', function() {
   });
 
   it('testing method - destroy, call 2 times', () => {
-    assert.throws(() => {
+    assert.doesNotThrow(() => {
       const context = new librealsense2.Context();
       context.destroy();
       context.destroy();

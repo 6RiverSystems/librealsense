@@ -6,7 +6,12 @@
 
 /* global describe, it, before, after */
 const assert = require('assert');
-const rs2 = require('../index.js');
+let rs2;
+try {
+  rs2 = require('node-librealsense');
+} catch (e) {
+  rs2 = require('../index.js');
+}
 
 let ctx;
 let dev;
@@ -60,35 +65,8 @@ describe('Pipeline test', function() {
       pipeline.start();
       pipeline.destroy();
     });
-    setTimeout(() => {
-      assert.equal(pipeline, undefined);
-    }, 100);
   });
 
-  it('Testing method start', () => {
-    let pipeline;
-    assert.doesNotThrow(() => {
-      pipeline = new rs2.Pipeline();
-      pipeline.start();
-    });
-    assert.notEqual(pipeline, undefined);
-    assert.doesNotThrow(() => {
-      pipeline.start();
-      pipeline.destroy();
-    });
-  });
-
-  it('Testing method stop', () => {
-    let pipeline;
-    pipeline = new rs2.Pipeline();
-    pipeline.start();
-    assert.notEqual(pipeline, undefined);
-    assert.doesNotThrow(() => {
-      pipeline.start();
-      pipeline.stop();
-      pipeline.destroy();
-   });
-  });
 
   it('Testing method waitForFrames', () => {
     let pipeline;
@@ -115,5 +93,29 @@ describe('Pipeline test', function() {
       }
     }
     pipeline.destroy();
+  });
+
+  it('Testing method start', () => {
+    let pipeline;
+    assert.doesNotThrow(() => {
+      pipeline = new rs2.Pipeline();
+      pipeline.start();
+    });
+    assert.notEqual(pipeline, undefined);
+    assert.doesNotThrow(() => {
+      pipeline.start();
+      pipeline.destroy();
+    });
+  });
+
+  it('Testing method stop', () => {
+    let pipeline;
+    pipeline = new rs2.Pipeline();
+    assert.notEqual(pipeline, undefined);
+    assert.doesNotThrow(() => {
+      pipeline.start();
+      pipeline.stop();
+      pipeline.destroy();
+   });
   });
 });

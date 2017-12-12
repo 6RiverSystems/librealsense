@@ -6,12 +6,18 @@
 
 /* global describe, it, before, after */
 const assert = require('assert');
-const rs2 = require('../index.js');
+let rs2;
+try {
+  rs2 = require('node-librealsense');
+} catch (e) {
+  rs2 = require('../index.js');
+}
 
 let frame;
+let pipeline;
 describe('Frame test', function() {
   before(function() {
-    const pipeline = new rs2.Pipeline();
+    pipeline = new rs2.Pipeline();
     pipeline.start();
     while (!frame) {
       const frameset = pipeline.waitForFrames();
@@ -20,6 +26,7 @@ describe('Frame test', function() {
   });
 
   after(function() {
+    pipeline.destroy();
     rs2.cleanup();
   });
 
@@ -166,8 +173,5 @@ describe('Frame test', function() {
     assert.doesNotThrow(() => {
       frame.destroy();
     });
-    setTimeout(() => {
-      assert.equal(frame, undefined);
-    }, 100);
   });
 });

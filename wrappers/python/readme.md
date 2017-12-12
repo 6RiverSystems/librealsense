@@ -14,19 +14,20 @@
   * `sudo apt-get install python python-dev` or `sudo apt-get install python3 python3-dev`
   * **Note:** The project will only use Python2 if it can't use Python3
 3. run the toplevel cmake command with the following additional flag: `-DBUILD_PYTHON_BINDINGS=bool:true`
+4. update your PYTHONPATH environment variable to add the path to the pyrealsense library
+  * `export PYTHONPATH=$PYTHONPATH:/usr/local/lib`
 
 **Note**: To force compilation with a specific version on a system with both Python 2 and Python 3 installed, add the following flag to CMake command:
 `-DPYTHON_EXECUTABLE=[full path to the exact python executable]`
 
 ### Windows Installation
-1. Install Python 2 or 3 for windows
-  * You can find the downloads on the official Python website [here](https://www.python.org/downloads/windows/)
-2. When running cmake, select the BUILD_PYTHON_BINDINGS option
-> `-DBUILD_PYTHON_BINDINGS=true`
-3. If you have multiple python installations on your machine you can use:
-> `-DPYTHON_EXECUTABLE=<path to python executable`
+1. Install Python 2 or 3 for windows. You can find the downloads on the official Python website [here](https://www.python.org/downloads/windows/)
+2. When running `cmake-gui`, select the `BUILD_PYTHON_BINDINGS` option
+3. If you have multiple python installations on your machine you can use: `-DPYTHON_EXECUTABLE=<path to python executable>`
+For example: `-DPYTHON_EXECUTABLE=C:/Python27/python.exe`
 
-  For example: `-DPYTHON_EXECUTABLE=C:/Python27/python.exe`
+> The precompiled binaries shipped with [the installer](https://github.com/IntelRealSense/librealsense/releases/download/v2.8.2/Intel.RealSense.SDK.exe) assume **python2.7**.
+>The error `ImportError: DLL load failed: The specified module could not be found` might indicate versions mismatch or architecture (x86 vs x64) mismatch. 
 
 ## Examples
 
@@ -73,4 +74,3 @@ depth = frames.get_depth_frame()
 depth_data = depth.as_frame().get_data()
 np_image = np.asanyarray(depth_data)
 ```
-
