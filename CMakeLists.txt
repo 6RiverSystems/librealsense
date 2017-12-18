@@ -4,8 +4,6 @@
 cmake_minimum_required(VERSION 3.5.1)
 project(librealsense)
 
-include(../CMakeCommon.txt)
-
 include(FindCUDA)
 set(CUDA_USE_STATIC_CUDA_RUNTIME OFF CACHE INTERNAL "" FORCE)
 
