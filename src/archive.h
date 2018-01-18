@@ -111,12 +111,16 @@ namespace librealsense
         void log_callback_start(rs2_time_t timestamp) override;
         void log_callback_end(rs2_time_t timestamp) const override;
 
+        void mark_fixed() override { _fixed = true; }
+        bool is_fixed() const override { return _fixed; }
+
     private:
         // TODO: check boost::intrusive_ptr or an alternative
         std::atomic<int> ref_count; // the reference count is on how many times this placeholder has been observed (not lifetime, not content)
         std::shared_ptr<archive_interface> owner; // pointer to the owner to be returned to by last observe
         std::weak_ptr<sensor_interface> sensor;
         frame_continuation on_release;
+        bool _fixed = false;
         std::shared_ptr<stream_profile_interface> stream;
     };
 
@@ -124,6 +128,7 @@ namespace librealsense
     {
     public:
         float3* get_vertices();
+        void export_to_ply(const std::string& fname, const frame_holder& texture);
         size_t get_vertex_count() const;
         float2* get_texture_coordinates();
     };
@@ -239,7 +244,7 @@ namespace librealsense
             case 2: pixel = reinterpret_cast<const uint16_t*>(get_frame_data())[y*get_width() + x]; break;
             case 4: pixel = reinterpret_cast<const uint32_t*>(get_frame_data())[y*get_width() + x]; break;
             case 8: pixel = reinterpret_cast<const uint64_t*>(get_frame_data())[y*get_width() + x]; break;
-            default: throw std::runtime_error("Unrecognized depth format");
+            default: throw std::runtime_error(to_string() << "Unrecognized depth format " << int(get_bpp() / 8) << " bytes per pixel");
             }
 
             return pixel * get_units();
@@ -270,7 +275,7 @@ namespace librealsense
             }, get_frame_data()));
         }
 
-    private:
+    protected:
         static float query_units(const std::shared_ptr<sensor_interface>& sensor)
         {
             if (sensor != nullptr)
@@ -313,6 +318,61 @@ namespace librealsense
     };
 
     MAP_EXTENSION(RS2_EXTENSION_DEPTH_FRAME, librealsense::depth_frame);
+
+    // Disparity frame provides an alternative representation of the depth data for stereo-based depth sensors
+    // In addition for the depth frame API it allows to query the stereoscopic baseline required to transform depth to disparity and vice versa
+    class disparity_frame : public depth_frame
+    {
+    public:
+        disparity_frame() : depth_frame()
+        {
+        }
+
+        // TODO Refactor to framemetadata
+        float get_stereo_baseline(void) const { return query_stereo_baseline(this->get_sensor()); }
+
+    protected:
+
+        static float query_stereo_baseline(const std::shared_ptr<sensor_interface>& sensor)
+        {
+            if (sensor != nullptr)
+            {
+                try
+                {
+                    auto stereo_sensor = As<librealsense::depth_stereo_sensor>(sensor);
+                    if (stereo_sensor != nullptr)
+                    {
+                        return stereo_sensor->get_stereo_baseline_mm();
+                    }
+                    else
+                    {
+                        //For playback sensors
+                        auto extendable = As<librealsense::extendable_interface>(sensor);
+                        if (extendable && extendable->extend_to(TypeToExtension<librealsense::depth_stereo_sensor>::value, (void**)(&stereo_sensor)))
+                        {
+                            return stereo_sensor->get_stereo_baseline_mm();
+                        }
+                    }
+                }
+                catch (const std::exception& e)
+                {
+                    LOG_ERROR("Failed to query stereo baseline from sensor. " << e.what());
+                }
+                catch (...)
+                {
+                    LOG_ERROR("Failed to query stereo baseline from sensor");
+                }
+            }
+            else
+            {
+                LOG_WARNING("sensor was nullptr");
+            }
+
+            return 0;
+        }
+    };
+
+    MAP_EXTENSION(RS2_EXTENSION_DISPARITY_FRAME, librealsense::disparity_frame);
 
     //TODO: Define Motion Frame
 

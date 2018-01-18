@@ -38,7 +38,7 @@ namespace librealsense
 
     std::shared_ptr<option> frame_source::get_published_size_option()
     {
-        return std::make_shared<frame_queue_size>(&_max_publish_list_size, option_range{ 1, 32, 1, 16 });
+        return std::make_shared<frame_queue_size>(&_max_publish_list_size, option_range{ 0, 32, 1, 16 });
     }
 
     frame_source::frame_source()
@@ -54,7 +54,8 @@ namespace librealsense
         std::vector<rs2_extension> supported { RS2_EXTENSION_VIDEO_FRAME,
                                                RS2_EXTENSION_COMPOSITE_FRAME,
                                                RS2_EXTENSION_POINTS,
-                                               RS2_EXTENSION_DEPTH_FRAME };
+                                               RS2_EXTENSION_DEPTH_FRAME,
+                                               RS2_EXTENSION_DISPARITY_FRAME };
 
         for (auto type : supported)
         {
