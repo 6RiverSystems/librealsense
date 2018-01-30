@@ -37,6 +37,32 @@ assign_version_property(PATCH)
 set(REALSENSE_VERSION_STRING ${REALSENSE_VERSION_MAJOR}.${REALSENSE_VERSION_MINOR}.${REALSENSE_VERSION_PATCH})
 infoValue(REALSENSE_VERSION_STRING)
 
+IF(DEFINED ENV{CMAKE_PREFIX_PATH})
+  IF($ENV{CMAKE_PREFIX_PATH} MATCHES "/opt/ros")
+    set(ROS_BUILD_TYPE TRUE)
+  ENDIF()
+ENDIF()
+
+IF (${ROS_BUILD_TYPE})
+  message(STATUS "Building in a ROS environment")
+
+  #################################
+  # catkin specific configuration #
+  #################################
+  find_package(catkin REQUIRED)
+  # The catkin_package macro generates cmake config files for your package
+  # Declare things to be passed to dependent projects
+  # INCLUDE_DIRS: uncomment this if you package contains header files
+  # LIBRARIES: libraries you create in this project that dependent projects also need
+  # CATKIN_DEPENDS: catkin_packages dependent projects also need
+  # DEPENDS: system dependencies of this project that dependent projects also need
+  catkin_package(
+          INCLUDE_DIRS include
+          LIBRARIES realsense2
+  )
+ENDIF()
+
+
 # Save the command line compile commands in the build output
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
 # View the makefile commands during build
