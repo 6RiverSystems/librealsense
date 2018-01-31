@@ -19,8 +19,21 @@
 
 #include "imgui-fonts-karla.hpp"
 #include "imgui-fonts-fontawesome.hpp"
+#include "../third-party/json.hpp"
 
 #include "realsense-ui-advanced-mode.h"
+#ifdef _WIN32
+#include <windows.h>
+#include <wchar.h>
+#include <KnownFolders.h>
+#include <shlobj.h>
+#endif
+
+#if defined __linux__ || defined __APPLE__
+#include <unistd.h>
+#include <sys/types.h>
+#include <pwd.h>
+#endif
 
 ImVec4 from_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a, bool consistent_color = false);
 ImVec4 operator+(const ImVec4& c, float v);
@@ -57,6 +70,60 @@ inline ImVec4 blend(const ImVec4& c, float a)
 
 namespace rs2
 {
+    struct textual_icon
+    {
+        explicit constexpr textual_icon(const char (&unicode_icon)[4]) :
+            _icon{ unicode_icon[0], unicode_icon[1], unicode_icon[2], unicode_icon[3] }
+        {
+        }
+        operator const char*() const
+        {
+            return _icon.data();
+        }
+    private:
+        std::array<char, 5> _icon;
+    };
+
+    inline std::ostream& operator<<(std::ostream& os, const textual_icon& i)
+    {
+        return os << static_cast<const char*>(i);
+    }
+
+    namespace textual_icons
+    {
+        static const textual_icon video_camera             { u8"\uf03d" };
+        static const textual_icon file_movie               { u8"\uf008" };
+        static const textual_icon circle                   { u8"\uf111" };
+        static const textual_icon square                   { u8"\uf0c8" };
+        static const textual_icon square_o                 { u8"\uf096" };
+        static const textual_icon check_square_o           { u8"\uf046" };
+        static const textual_icon refresh                  { u8"\uf021" };
+        static const textual_icon info_circle              { u8"\uf05a" };
+        static const textual_icon bars                     { u8"\uf0c9" };
+        static const textual_icon times                    { u8"\uf00d" };
+        static const textual_icon lock                     { u8"\uf023" };
+        static const textual_icon camera                   { u8"\uf030" };
+        static const textual_icon step_backward            { u8"\uf048" };
+        static const textual_icon play                     { u8"\uf04b" };
+        static const textual_icon pause                    { u8"\uf04c" };
+        static const textual_icon stop                     { u8"\uf04d" };
+        static const textual_icon step_forward             { u8"\uf051" };
+        static const textual_icon minus                    { u8"\uf068" };
+        static const textual_icon exclamation_triangle     { u8"\uf071" };
+        static const textual_icon unlock                   { u8"\uf09c" };
+        static const textual_icon floppy                   { u8"\uf0c7" };
+        static const textual_icon caret_down               { u8"\uf0d7" };
+        static const textual_icon repeat                   { u8"\uf0e2" };
+        static const textual_icon toggle_off               { u8"\uf204" };
+        static const textual_icon toggle_on                { u8"\uf205" };
+        static const textual_icon window_maximize          { u8"\uf2d0" };
+        static const textual_icon window_restore           { u8"\uf2d2" };
+        static const textual_icon plus_circle              { u8"\uf055" };
+        static const textual_icon download                 { u8"\uf019" };
+        static const textual_icon upload                   { u8"\uf093" };
+        static const textual_icon bar_chart                { u8"\uf080" };
+    }
+
     class subdevice_model;
     struct notifications_model;
 
@@ -130,7 +197,7 @@ namespace rs2
         std::string label = "";
         std::string id = "";
         subdevice_model* dev;
-
+        std::function<bool(option_model&, std::string&, notifications_model&)> custom_draw_method = nullptr;
     private:
         bool is_all_integers() const;
         bool is_enum() const;
@@ -191,7 +258,6 @@ namespace rs2
         std::shared_ptr<options> _block;
         std::map<int, option_model> options_metadata;
         std::string _name;
-        subdevice_model* _owner;
         std::function<rs2::frame(rs2::frame)> _invoker;
     };
 
@@ -217,7 +283,7 @@ namespace rs2
         void draw_options(const std::vector<rs2_option>& drawing_order,
                           bool update_read_only_options, std::string& error_message,
                           notifications_model& model);
-
+        int num_supported_non_default_options() const;
         bool draw_option(rs2_option opt, bool update_read_only_options,
             std::string& error_message, notifications_model& model)
         {
@@ -290,6 +356,7 @@ namespace rs2
         bool roi_checked = false;
 
         std::atomic<bool> _pause;
+        std::atomic<bool> _is_being_recorded{ false };
 
         bool draw_streams_selector = true;
         bool draw_fps_selector = true;
@@ -338,6 +405,8 @@ namespace rs2
         void show_stream_footer(const rect& stream_rect,const mouse_info& mouse);
         void show_stream_header(ImFont* font, rs2::rect stream_rect, viewer_model& viewer);
 
+        void snapshot_frame(const char* filename,viewer_model& viewer) const;
+
         void begin_stream(std::shared_ptr<subdevice_model> d, rs2::stream_profile p);
         rect layout;
         std::unique_ptr<texture_buffer> texture;
@@ -363,7 +432,9 @@ namespace rs2
         rect _normalized_zoom{0, 0, 1, 1};
         int color_map_idx = 1;
         bool show_stream_details = false;
+        rect curr_info_rect{};
         temporal_event _stream_not_alive;
+        bool show_map_ruler = true;
     };
 
     std::pair<std::string, std::string> get_device_name(const device& dev);
@@ -376,18 +447,20 @@ namespace rs2
         void reset();
         explicit device_model(device& dev, std::string& error_message, viewer_model& viewer);
         void start_recording(const std::string& path, std::string& error_message);
-        void stop_recording();
+        void stop_recording(viewer_model& viewer);
         void pause_record();
         void resume_record();
         int draw_playback_panel(ImFont* font, viewer_model& view);
-        void draw_advanced_mode_tab(viewer_model& view);
+        bool draw_advanced_controls(viewer_model& view, ux_window& window);
         void draw_controls(float panel_width, float panel_height,
             ux_window& window,
             std::string& error_message,
             device_model*& device_to_remove,
             viewer_model& viewer, float windows_width,
             bool update_read_only_options,
-            std::vector<std::function<void()>>& draw_later);
+            std::vector<std::function<void()>>& draw_later, bool draw_device_outline = true);
+        void handle_harware_events(const std::string& serialized_data);
+
         std::vector<std::shared_ptr<subdevice_model>> subdevices;
 
         bool metadata_supported = false;
@@ -404,16 +477,35 @@ namespace rs2
         bool allow_remove = true;
         bool show_depth_only = false;
         bool show_stream_selection = true;
-
+        std::map<int, std::array<uint8_t, 6>> controllers;
+        std::set<std::array<uint8_t, 6>> available_controllers;
         std::vector<std::pair<std::string, std::string>> infos;
         std::vector<std::string> restarting_device_info;
+        std::set<std::string> advanced_mode_settings_file_names;
+        std::string selected_file_preset;
     private:
+        void draw_info_icon(const ImVec2& size);
         int draw_seek_bar();
         int draw_playback_controls(ImFont* font, viewer_model& view);
         advanced_mode_control amc;
         std::string pretty_time(std::chrono::nanoseconds duration);
-
+        void draw_controllers_panel(ImFont* font, bool is_device_streaming);
+        float draw_device_panel(float panel_width,
+                                ux_window& window,
+                                std::string& error_message,
+                                viewer_model& viewer);
         void play_defaults(viewer_model& view);
+        float draw_preset_panel(float panel_width,
+            ux_window& window,
+            std::string& error_message,
+            viewer_model& viewer,
+            bool update_read_only_options);
+        bool prompt_toggle_advanced_mode(bool enable_advanced_mode, const std::string& message_text,
+            std::vector<std::string>& restarting_device_info, 
+            viewer_model& view, 
+            ux_window& window);
+        void load_viewer_configurations(const std::string& json_str);
+        void save_viewer_configurations(std::ofstream& outfile, nlohmann::json& j);
 
         std::shared_ptr<recorder> _recorder;
         std::vector<std::shared_ptr<subdevice_model>> live_subdevices;
@@ -443,13 +535,14 @@ namespace rs2
         double get_age_in_ms() const;
         void draw(int w, int y, notification_model& selected);
         void set_color_scheme(float t) const;
+        void clear_color_scheme() const;
 
         static const int MAX_LIFETIME_MS = 10000;
         int height = 40;
-        int index;
+        int index = 0;
         std::string message;
-        double timestamp;
-        rs2_log_severity severity;
+        double timestamp = 0.0;
+        rs2_log_severity severity = RS2_LOG_SEVERITY_NONE;
         std::chrono::high_resolution_clock::time_point created_time;
         // TODO: Add more info
     };
@@ -506,7 +599,7 @@ namespace rs2
         post_processing_filters(viewer_model& viewer)
             : processing_block([&](rs2::frame f, const rs2::frame_source& source)
             {
-                proccess(std::move(f),source);
+                process(std::move(f),source);
             }),
             viewer(viewer),
             keep_calculating(true),
@@ -561,7 +654,7 @@ namespace rs2
         viewer_model& viewer;
 
         void render_loop();
-        void proccess(rs2::frame f, const rs2::frame_source& source);
+        void process(rs2::frame f, const rs2::frame_source& source);
         std::vector<rs2::frame> handle_frame(rs2::frame f);
 
         rs2::frame apply_filters(rs2::frame f);
@@ -576,6 +669,100 @@ namespace rs2
         int last_frame_number = 0;
         double last_timestamp = 0;
         int last_stream_id = 0;
+    };
+
+    class press_button_model
+    {
+    public:
+        press_button_model(const char* icon_default, const char* icon_pressed, std::string tooltip_default, std::string tooltip_pressed)
+        {
+            tooltip[unpressed] = tooltip_default;
+            tooltip[pressed] = tooltip_pressed;
+            icon[unpressed] = icon_default;
+            icon[pressed] = icon_pressed;
+        }
+
+        void toggle_button() { state_pressed = !state_pressed; }            
+        void set_button_pressed(bool p) { state_pressed = p; }            
+        bool is_pressed() { return state_pressed; }
+        std::string get_tooltip() { return(state_pressed ? tooltip[pressed]: tooltip[unpressed]); }
+        std::string get_icon() { return(state_pressed ? icon[pressed] : icon[unpressed]); }
+
+    private:
+        enum button_state
+        {
+            unpressed, //default
+            pressed
+        };
+
+        bool state_pressed = false;
+        std::string tooltip[2];        
+        std::string icon[2];
+    };
+
+    using color = std::array<float, 3>;
+    using face = std::array<float3, 4>;
+    using colored_cube = std::array<std::pair<face, color>, 6>;
+    using tracked_point = std::pair<rs2_vector, unsigned int>; // translation and confidence
+
+    class tm2_model
+    {
+    public:
+        void draw_controller_pose_object();
+        void draw_pose_object();
+        void draw_trajectory(tracked_point& p);
+        void draw_boundary(tracked_point& p);
+
+        press_button_model trajectory_button{ u8"\uf1b0", u8"\uf1b0","Draw trajectory", "Stop drawing trajectory" };
+        press_button_model camera_object_button{ u8"\uf047", u8"\uf083",  "Draw pose axis", "Draw camera pose" };
+        press_button_model boundary_button{ u8"\uf278", u8"\uf278", "Set trajectory as boundary", "Discard boundary" };
+
+    private:
+        void add_to_trajectory(tracked_point& p);
+
+        const float len_x = 0.1f;
+        const float len_y = 0.03f;
+        const float len_z = 0.01f;
+        const float lens_radius = 0.005f;
+        /*
+          4--------------------------3
+         /|                         /|
+        5-|------------------------6 |
+        | /1                       | /2
+        |/                         |/
+        7--------------------------8
+        */
+        float3 v1{ -len_x/2, -len_y/2,  len_z/2 };
+        float3 v2{  len_x/2, -len_y/2,  len_z/2 };
+        float3 v3{  len_x/2,  len_y/2,  len_z/2 };
+        float3 v4{ -len_x/2,  len_y/2,  len_z/2 };
+        float3 v5{ -len_x/2,  len_y/2, -len_z/2 };
+        float3 v6{  len_x/2,  len_y/2, -len_z/2 };
+        float3 v7{ -len_x/2, -len_y/2, -len_z/2 };
+        float3 v8{  len_x/2, -len_y/2, -len_z/2 };
+        face f1{ { v1,v2,v3,v4 } }; //Back
+        face f2{ { v2,v8,v6,v3 } }; //Right side
+        face f3{ { v4,v3,v6,v5 } }; //Top side
+        face f4{ { v1,v4,v5,v7 } }; //Left side
+        face f5{ { v7,v8,v6,v5 } }; //Front
+        face f6{ { v1,v2,v8,v7 } }; //Bottom side
+
+        std::array<color, 6> colors{ {
+            {{ 0.5f, 0.5f, 0.5f }}, //Back
+            {{ 0.7f, 0.7f, 0.7f }}, //Right side
+            {{ 1.0f, 0.7f, 0.7f }}, //Top side
+            {{ 0.7f, 0.7f, 0.7f }}, //Left side
+            {{ 0.4f, 0.4f, 0.4f }}, //Front
+            {{ 0.7f, 0.7f, 0.7f }}  //Bottom side
+            } };
+
+        colored_cube camera_box{ { { f1,colors[0] },{ f2,colors[1] },{ f3,colors[2] },{ f4,colors[3] },{ f5,colors[4] },{ f6,colors[5] } } };
+        float3 center_left{ v5.x + len_x / 3, v6.y - len_y / 3, v5.z };
+        float3 center_right{ v6.x - len_x / 3, v6.y - len_y / 3, v5.z };
+                
+        std::vector<tracked_point> trajectory;
+        std::vector<float2> boundary;
+        
     };
 
     class viewer_model
@@ -647,6 +834,7 @@ namespace rs2
         stream_model* selected_stream = nullptr;
 
         post_processing_filters ppf;
+        tm2_model tm2;
 
         notifications_model not_model;
         bool is_output_collapsed = false;
@@ -674,11 +862,26 @@ namespace rs2
 
         rs2::asynchronous_syncer s;
     private:
+        struct rgb {
+            uint32_t r, g, b;
+        };
+
+        struct rgb_per_distance {
+            float depth_val;
+            rgb rgb_val;
+        };
 
         friend class post_processing_filters;
         std::map<int, rect> get_interpolated_layout(const std::map<int, rect>& l);
         void show_icon(ImFont* font_18, const char* label_str, const char* text, int x, int y,
                        int id, const ImVec4& color, const std::string& tooltip = "");
+        void draw_color_ruler(const mouse_info& mouse,
+                              const stream_model& s_model,
+                              const rect& stream_rect,
+                              std::vector<rgb_per_distance> rgb_per_distance_vec,
+                              float ruler_length,
+                              const std::string& ruler_units);
+        float calculate_ruler_max_distance(const std::vector<float>& distances) const;
 
         streams_layout _layout;
         streams_layout _old_layout;
@@ -715,6 +918,12 @@ namespace rs2
         size_t pixel_width, size_t pixels_height, size_t bytes_per_pixel,
         const void* raster_data, size_t stride_bytes);
 
+    // Auxillary function to save stream data in its internal (raw) format
+    bool save_frame_raw_data(const std::string& filename, rs2::frame frame);
+
+    // Auxillary function to store frame attributes
+    bool save_frame_meta_data(const std::string& filename, rs2::frame frame);
+
     class device_changes
     {
     public:
@@ -725,4 +934,106 @@ namespace rs2
         std::queue<event_information> _changes;
         std::mutex _mtx;
     };
+
+    enum special_folder
+    {
+        user_desktop,
+        user_documents,
+        user_pictures,
+        user_videos,
+        temp_folder
+    };
+
+    inline std::string get_timestamped_file_name()
+    {
+        std::time_t now = std::time(NULL);
+        std::tm * ptm = std::localtime(&now);
+        char buffer[16];
+        // Format: 20170529_205500
+        std::strftime(buffer, 16, "%Y%m%d_%H%M%S", ptm);
+        return buffer;
+    }
+    inline std::string get_folder_path(special_folder f)
+    {
+        std::string res;
+#ifdef _WIN32
+        if (f == temp_folder)
+        {
+            TCHAR buf[MAX_PATH];
+            if (GetTempPath(MAX_PATH, buf) != 0)
+            {
+                char str[1024];
+                wcstombs(str, buf, 1023);
+                res = str;
+            }
+        }
+        else
+        {
+            GUID folder;
+            switch (f)
+            {
+            case user_desktop: folder = FOLDERID_Desktop;
+                break;
+            case user_documents: folder = FOLDERID_Documents;
+                break;
+            case user_pictures: folder = FOLDERID_Pictures;
+                break;
+            case user_videos: folder = FOLDERID_Videos;
+                break;
+            default:
+                throw std::invalid_argument(
+                    std::string("Value of f (") + std::to_string(f) + std::string(") is not supported"));
+            }
+            PWSTR folder_path = NULL;
+            HRESULT hr = SHGetKnownFolderPath(folder, KF_FLAG_DEFAULT_PATH, NULL, &folder_path);
+            if (SUCCEEDED(hr))
+            {
+                char str[1024];
+                wcstombs(str, folder_path, 1023);
+                CoTaskMemFree(folder_path);
+                res = str;
+                res += "\\";
+            }
+            else
+            {
+                throw std::runtime_error("Failed to get requested special folder");
+            }
+        }
+#endif //_WIN32
+#if defined __linux__ || defined __APPLE__
+        if (f == special_folder::temp_folder)
+        {
+            const char* tmp_dir = getenv("TMPDIR");
+            res = tmp_dir ? tmp_dir : "/tmp/";
+        }
+        else
+        {
+            const char* home_dir = getenv("HOME");
+            if (!home_dir)
+            {
+                struct passwd* pw = getpwuid(getuid());
+                home_dir = (pw && pw->pw_dir) ? pw->pw_dir : "";
+            }
+            if (home_dir)
+            {
+                res = home_dir;
+                switch (f)
+                {
+                case user_desktop: res += "/Desktop/";
+                    break;
+                case user_documents: res += "/Documents/";
+                    break;
+                case user_pictures: res += "/Pictures/";
+                    break;
+                case user_videos: res += "/Videos/";
+                    break;
+                default:
+                    throw std::invalid_argument(
+                        std::string("Value of f (") + std::to_string(f) + std::string(") is not supported"));
+                }
+            }
+        }
+#endif // defined __linux__ || defined __APPLE__
+        return res;
+    }
 }

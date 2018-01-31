@@ -1250,13 +1250,10 @@ TEST_CASE("Motion profiles sanity", "[live]")
 
                     CAPTURE(stream);
 
-                    if (stream != RS2_STREAM_ACCEL && stream != RS2_STREAM_GYRO)
+                    if (stream == RS2_STREAM_ACCEL || stream == RS2_STREAM_GYRO)
                     {
-                        REQUIRE_THROWS(dev.get_motion_intrinsics(stream));
-                    }
-                    else
-                    {
-                        REQUIRE_NOTHROW(mm_int = dev.get_motion_intrinsics(stream));
+                        auto motion = profile.as<motion_stream_profile>();
+                        REQUIRE_NOTHROW(mm_int = motion.get_motion_intrinsics());
 
                         for (int j = 0; j < 3; j++)
                         {
@@ -4069,3 +4066,239 @@ TEST_CASE("Pipeline record and playback", "[live]") {
         }
     }
 }
+
+
+TEST_CASE("Syncer sanity with software-device device", "[live][software-device]") {
+    rs2::context ctx;
+    if (make_context(SECTION_FROM_TEST_NAME, &ctx))
+    {
+       
+        const int W = 640;
+        const int H = 480;
+        const int BPP = 2;
+        std::shared_ptr<software_device> dev = std::move(std::make_shared<software_device>());
+        auto s = dev->add_sensor("software_sensor");
+       
+        rs2_intrinsics intrinsics{ W, H, 0, 0, 0, 0, RS2_DISTORTION_NONE ,{ 0,0,0,0,0 } };
+
+        s.add_video_stream({ RS2_STREAM_DEPTH, 0, 0, W, H, 60, BPP, RS2_FORMAT_Z16, intrinsics });
+        s.add_video_stream({ RS2_STREAM_INFRARED, 1, 1, W, H,60, BPP, RS2_FORMAT_Y8, intrinsics });
+        dev->create_matcher(RS2_MATCHER_DI);
+
+        frame_queue q;
+
+        auto profiles = s.get_stream_profiles();
+        auto depth = profiles[0];
+        auto ir = profiles[1];
+
+        syncer sync;
+        s.start(sync);
+       
+        std::vector<uint8_t> pixels(W * H * BPP, 0);
+        std::weak_ptr<rs2::software_device> weak_dev(dev);
+      
+        std::thread t([&s, weak_dev, pixels, depth, ir]() mutable {
+            
+            auto shared_dev = weak_dev.lock();
+            if (shared_dev == nullptr)
+                return;
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0,0,0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 7, depth });
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0,0,0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 5, ir });
+              
+            s.on_video_frame({ pixels.data(), [](void*) {},0,0, 0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 8, depth });
+            s.on_video_frame({ pixels.data(), [](void*) {},0,0, 0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 6, ir });
+
+            s.on_video_frame({ pixels.data(), [](void*) {},0,0, 0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 8, ir });
+        });
+        t.detach();
+
+        std::vector<std::vector<std::pair<rs2_stream, int>>> expected =
+        {
+            { { RS2_STREAM_DEPTH , 7}},
+            { { RS2_STREAM_INFRARED , 5 } },
+            { { RS2_STREAM_INFRARED , 6 } },
+            { { RS2_STREAM_DEPTH , 8 },{ RS2_STREAM_INFRARED , 8 } }
+        };
+
+        std::vector<std::vector<std::pair<rs2_stream, int>>> results;
+
+        for (auto i = 0; i < expected.size(); i++)
+        {
+            frameset fs;
+            REQUIRE_NOTHROW(fs = sync.wait_for_frames(5000));
+            std::vector < std::pair<rs2_stream, int>> curr;
+
+            for (auto f : fs)
+            {
+                curr.push_back({ f.get_profile().stream_type(), f.get_frame_number() });
+            }
+            results.push_back(curr);
+        }
+
+        CAPTURE(results.size());
+        CAPTURE(expected.size());
+        REQUIRE(results.size() == expected.size());
+
+        for (auto i = 0; i < expected.size(); i++)
+        {
+            auto exp = expected[i];
+            auto curr = results[i];
+            CAPTURE(i);
+            CAPTURE(exp.size());
+            CAPTURE(curr.size());
+            REQUIRE(exp.size() == curr.size());
+
+            for (auto j = 0; j < exp.size(); j++)
+            {
+                CAPTURE(j);
+                CAPTURE(exp[j].first);
+                CAPTURE(exp[j].second);
+                CAPTURE(curr[j].first);
+                CAPTURE(curr[j].second);
+                REQUIRE(std::find(curr.begin(), curr.end(), exp[j]) != curr.end());
+            }
+        }
+    }
+}
+
+TEST_CASE("Syncer clean_inactive_streams by frame number with software-device device", "[live][software-device]") {
+    rs2::context ctx;
+    if (make_context(SECTION_FROM_TEST_NAME, &ctx))
+    {
+        log_to_file(RS2_LOG_SEVERITY_DEBUG);
+        const int W = 640;
+        const int H = 480;
+        const int BPP = 2;
+
+        std::shared_ptr<software_device> dev = std::make_shared<software_device>();
+        auto s = dev->add_sensor("software_sensor");
+        
+        rs2_intrinsics intrinsics{ W, H, 0, 0, 0, 0, RS2_DISTORTION_NONE ,{ 0,0,0,0,0 } };
+        s.add_video_stream({ RS2_STREAM_DEPTH, 0, 0, W, H, 60, BPP, RS2_FORMAT_Z16, intrinsics });
+        s.add_video_stream({ RS2_STREAM_INFRARED, 1, 1, W, H,60,  BPP, RS2_FORMAT_Y8, intrinsics });
+        dev->create_matcher(RS2_MATCHER_DI);
+        frame_queue q;
+        
+        auto profiles = s.get_stream_profiles();
+        auto depth = profiles[0];
+        auto ir = profiles[1];
+
+        syncer sync(10);
+        s.start(sync);
+
+        std::vector<uint8_t> pixels(W * H * BPP, 0);
+        std::weak_ptr<rs2::software_device> weak_dev(dev);
+        std::thread t([s, weak_dev, pixels, depth, ir]() mutable {
+            auto shared_dev = weak_dev.lock();
+            if (shared_dev == nullptr)
+                return;
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0,0,0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 1, depth });
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0,0, 0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 1, ir });
+
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0,0,0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 3, depth });
+
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0,0, 0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 4, depth });
+
+            s.on_video_frame({ pixels.data(), [](void*) {},0,0, 0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 5, depth });
+
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0,0,0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 6, depth });
+
+            s.on_video_frame({ pixels.data(), [](void*) {}, 0, 0, 0, RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK, 7, depth });
+        });
+
+        t.detach();
+
+        std::vector<std::vector<std::pair<rs2_stream, int>>> expected =
+        {
+            { { RS2_STREAM_DEPTH , 1 } },
+            { { RS2_STREAM_INFRARED , 1 } },
+            { { RS2_STREAM_DEPTH , 3 } },
+            { { RS2_STREAM_DEPTH , 4 } },
+            { { RS2_STREAM_DEPTH , 5 } },
+            { { RS2_STREAM_DEPTH , 6 } },
+            { { RS2_STREAM_DEPTH , 7 } },
+        };
+
+        std::vector<std::vector<std::pair<rs2_stream, int>>> results;
+
+        for (auto i = 0; i < expected.size(); i++)
+        {
+            frameset fs;
+            CAPTURE(i);
+            REQUIRE_NOTHROW(fs = sync.wait_for_frames(5000));
+            std::vector < std::pair<rs2_stream, int>> curr;
+
+            for (auto f : fs)
+            {
+                curr.push_back({ f.get_profile().stream_type(), f.get_frame_number() });
+            } 
+            results.push_back(curr);
+        }
+
+        CAPTURE(results.size());
+        CAPTURE(expected.size());
+        REQUIRE(results.size() == expected.size());
+
+        for (auto i = 0; i < expected.size(); i++)
+        {
+            auto exp = expected[i];
+            auto curr = results[i];
+            CAPTURE(i);
+            CAPTURE(exp.size());
+            CAPTURE(curr.size());
+            REQUIRE(exp.size() == exp.size());
+
+            for (auto j = 0; j < exp.size(); j++)
+            {
+                CAPTURE(j);
+                CAPTURE(exp[j].first);
+                CAPTURE(exp[j].second);
+                CAPTURE(curr[j].first);
+                CAPTURE(curr[j].second);
+                REQUIRE(std::find(curr.begin(), curr.end(), exp[j]) != curr.end());
+            }
+        }
+    }
+}
+
+#define ADD_ENUM_TEST_CASE(rs2_enum_type, RS2_ENUM_COUNT)                                  \
+TEST_CASE(#rs2_enum_type " enum test", "[live]") {                                         \
+    int last_item_index = static_cast<int>(RS2_ENUM_COUNT);                                \
+    for (int i = 0; i < last_item_index; i++)                                              \
+    {                                                                                      \
+        rs2_enum_type enum_value = static_cast<rs2_enum_type>(i);                          \
+        std::string str;                                                                   \
+        REQUIRE_NOTHROW(str = rs2_enum_type##_to_string(enum_value));                      \
+        REQUIRE(str.empty() == false);                                                     \
+        std::string error = "Unknown enum value passed to " #rs2_enum_type "_to_string";   \
+        error += " (Value: " + std::to_string(i) + ")";                                    \
+        error += "\nDid you add a new value but forgot to add it to:\n"                    \
+                   " librealsense::get_string(" #rs2_enum_type ") ?";                      \
+        CAPTURE(error);                                                                    \
+        REQUIRE(str != "UNKNOWN");                                                         \
+    }                                                                                      \
+    /* Test for false positive*/                                                           \
+    for (int i = last_item_index; i < last_item_index + 1; i++)                            \
+    {                                                                                      \
+        rs2_enum_type enum_value = static_cast<rs2_enum_type>(i);                          \
+        std::string str;                                                                   \
+        REQUIRE_NOTHROW(str = rs2_enum_type##_to_string(enum_value));                      \
+        REQUIRE(str == "UNKNOWN");                                                         \
+    }                                                                                      \
+}
+
+ADD_ENUM_TEST_CASE(rs2_stream, RS2_STREAM_COUNT)
+ADD_ENUM_TEST_CASE(rs2_format, RS2_FORMAT_COUNT)
+ADD_ENUM_TEST_CASE(rs2_distortion, RS2_DISTORTION_COUNT)
+ADD_ENUM_TEST_CASE(rs2_option, RS2_OPTION_COUNT)
+ADD_ENUM_TEST_CASE(rs2_camera_info, RS2_CAMERA_INFO_COUNT)
+ADD_ENUM_TEST_CASE(rs2_timestamp_domain, RS2_TIMESTAMP_DOMAIN_COUNT)
+ADD_ENUM_TEST_CASE(rs2_notification_category, RS2_NOTIFICATION_CATEGORY_COUNT)
+ADD_ENUM_TEST_CASE(rs2_sr300_visual_preset, RS2_SR300_VISUAL_PRESET_COUNT)
+ADD_ENUM_TEST_CASE(rs2_log_severity, RS2_LOG_SEVERITY_COUNT)
+ADD_ENUM_TEST_CASE(rs2_exception_type, RS2_EXCEPTION_TYPE_COUNT)
+ADD_ENUM_TEST_CASE(rs2_playback_status, RS2_PLAYBACK_STATUS_COUNT)
+ADD_ENUM_TEST_CASE(rs2_extension, RS2_EXTENSION_COUNT)
+ADD_ENUM_TEST_CASE(rs2_frame_metadata_value, RS2_FRAME_METADATA_COUNT)
+ADD_ENUM_TEST_CASE(rs2_rs400_visual_preset, RS2_RS400_VISUAL_PRESET_COUNT)
+

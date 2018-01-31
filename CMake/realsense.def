@@ -22,6 +22,7 @@ EXPORTS
     rs2_delete_sensor
     
     rs2_get_extrinsics
+    rs2_register_extrinsics
     rs2_get_motion_intrinsics
 
     rs2_get_stream_profiles
@@ -45,6 +46,7 @@ EXPORTS
     rs2_get_notification_timestamp
     rs2_get_notification_severity
     rs2_get_notification_category
+    rs2_get_notification_serialized_data
 
     rs2_get_frame_metadata
     rs2_supports_frame_metadata
@@ -61,8 +63,10 @@ EXPORTS
     rs2_get_frame_texture_coordinates
     rs2_get_frame_points_count
     rs2_release_frame
+    rs2_keep_frame
     rs2_frame_add_ref
-
+    rs2_pose_frame_get_pose_data
+    
     rs2_get_option
     rs2_set_option
     rs2_supports_option
@@ -98,6 +102,7 @@ EXPORTS
     rs2_get_librealsense_exception_type
     rs2_exception_type_to_string
     rs2_extension_type_to_string
+    rs2_extension_to_string
     rs2_playback_status_to_string
     rs2_log_severity_to_string
     rs2_log
@@ -108,6 +113,7 @@ EXPORTS
     rs2_option_to_string
     rs2_camera_info_to_string
     rs2_frame_metadata_to_string
+    rs2_frame_metadata_value_to_string
     rs2_timestamp_domain_to_string
     rs2_sr300_visual_preset_to_string
     rs2_notification_category_to_string
@@ -190,6 +196,7 @@ EXPORTS
     rs2_create_record_device 
     rs2_record_device_pause
     rs2_record_device_resume
+    rs2_record_device_filename
 
     rs2_context_add_device
     rs2_context_remove_device
@@ -239,3 +246,16 @@ EXPORTS
     rs2_delete_device_hub
 
     rs2_export_to_ply
+    rs2_create_software_device
+    rs2_software_device_add_sensor
+    rs2_software_sensor_on_video_frame
+    rs2_software_device_create_matcher
+    rs2_software_sensor_add_video_stream
+    rs2_software_sensor_add_read_only_option
+    rs2_software_sensor_update_read_only_option
+
+    rs2_loopback_enable
+    rs2_loopback_disable
+    rs2_loopback_is_enabled
+    rs2_connect_tm2_controller
+    rs2_disconnect_tm2_controller

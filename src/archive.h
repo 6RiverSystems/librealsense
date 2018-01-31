@@ -53,10 +53,10 @@ namespace librealsense
         std::vector<byte> data;
         frame_additional_data additional_data;
 
-        explicit frame() : ref_count(0), owner(nullptr), on_release() {}
+        explicit frame() : ref_count(0), _kept(false), owner(nullptr), on_release() {}
         frame(const frame& r) = delete;
         frame(frame&& r)
-            : ref_count(r.ref_count.exchange(0)),
+            : ref_count(r.ref_count.exchange(0)), _kept(r._kept.exchange(false)),
               owner(r.owner), on_release()
         {
             *this = std::move(r);
@@ -68,6 +68,7 @@ namespace librealsense
             data = move(r.data);
             owner = r.owner;
             ref_count = r.ref_count.exchange(0);
+            _kept = r._kept.exchange(false);
             on_release = std::move(r.on_release);
             additional_data = std::move(r.additional_data);
             r.owner.reset();
@@ -98,6 +99,8 @@ namespace librealsense
 
         void acquire() override { ref_count.fetch_add(1); }
         void release() override;
+        void keep() override;
+
         frame_interface* publish(std::shared_ptr<archive_interface> new_owner) override;
         void attach_continuation(frame_continuation&& continuation) override { on_release = std::move(continuation); }
         void disable_continuation() override { on_release.reset(); }
@@ -121,6 +124,7 @@ namespace librealsense
         std::weak_ptr<sensor_interface> sensor;
         frame_continuation on_release;
         bool _fixed = false;
+        std::atomic_bool _kept;
         std::shared_ptr<stream_profile_interface> stream;
     };
 
@@ -155,6 +159,14 @@ namespace librealsense
         frame_interface* first()
         {
             return get_frame(0);
+        }
+
+        void keep() override
+        {
+            auto frames = get_frames();
+            for (int i = 0; i < get_embedded_frames_count(); i++)
+                if (frames[i]) frames[i]->keep();
+            frame::keep();
         }
 
         size_t get_embedded_frames_count() const { return data.size() / sizeof(rs2_frame*); }
@@ -228,13 +240,27 @@ namespace librealsense
     class depth_frame : public video_frame
     {
     public:
-        depth_frame() : video_frame()
+        depth_frame() : video_frame(), _depth_units()
         {
+        }
+        
+        frame_interface* publish(std::shared_ptr<archive_interface> new_owner) override
+        {
+            _depth_units = optional_value<float>();
+            return video_frame::publish(new_owner);
+        }
+        
+        void keep() override
+        {
+            if (_original) _original->keep();
+            video_frame::keep();
         }
 
         float get_distance(int x, int y) const
         {
-            if (_original)
+            // If this frame does not itself contain Z16 depth data,
+            // fall back to the original frame it was created from
+            if (_original && get_stream()->get_format() != RS2_FORMAT_Z16)
                 return((depth_frame*)_original.frame)->get_distance(x, y);
 
             uint64_t pixel = 0;
@@ -250,7 +276,12 @@ namespace librealsense
             return pixel * get_units();
         }
 
-        float get_units() const { return query_units(this->get_sensor()); }
+        float get_units() const 
+        { 
+            if (!_depth_units)
+                _depth_units = query_units(get_sensor());
+            return _depth_units.value();
+        }
 
         const frame_interface* get_original_depth() const
         {
@@ -315,6 +346,7 @@ namespace librealsense
         }
 
         frame_holder _original;
+        mutable optional_value<float> _depth_units;
     };
 
     MAP_EXTENSION(RS2_EXTENSION_DEPTH_FRAME, librealsense::depth_frame);
@@ -374,7 +406,45 @@ namespace librealsense
 
     MAP_EXTENSION(RS2_EXTENSION_DISPARITY_FRAME, librealsense::disparity_frame);
 
-    //TODO: Define Motion Frame
+    class motion_frame : public frame
+    {
+    public:
+        motion_frame() : frame()
+        {}
+    };
+
+    MAP_EXTENSION(RS2_EXTENSION_MOTION_FRAME, librealsense::motion_frame);
+
+    class pose_frame : public frame
+    {
+    public:
+        // pose frame data buffer is pose info struct
+        struct pose_info
+        {
+            float3   translation;          /**< X, Y, Z values of translation, in meters (relative to initial position)                                    */
+            float3   velocity;             /**< X, Y, Z values of velocity, in meter/sec                                                                   */
+            float3   acceleration;         /**< X, Y, Z values of acceleration, in meter/sec^2                                                             */
+            float4   rotation;             /**< Qi, Qj, Qk, Qr components of rotation as represented in quaternion rotation (relative to initial position) */
+            float3   angular_velocity;     /**< X, Y, Z values of angular velocity, in radians/sec                                                         */
+            float3   angular_acceleration; /**< X, Y, Z values of angular acceleration, in radians/sec^2                                                   */
+            uint32_t tracker_confidence;   /**< pose data confidence 0x0 - Failed, 0x1 - Low, 0x2 - Medium, 0x3 - High                                     */
+            uint32_t mapper_confidence;    /**< pose data confidence 0x0 - Failed, 0x1 - Low, 0x2 - Medium, 0x3 - High                                     */
+        };
+
+        pose_frame() : frame() {}
+
+        float3   get_translation()          const { return reinterpret_cast<const pose_info*>(data.data())->translation; }
+        float3   get_velocity()             const { return reinterpret_cast<const pose_info*>(data.data())->velocity; }
+        float3   get_acceleration()         const { return reinterpret_cast<const pose_info*>(data.data())->acceleration; }
+        float4   get_rotation()             const { return reinterpret_cast<const pose_info*>(data.data())->rotation; }
+        float3   get_angular_velocity()     const { return reinterpret_cast<const pose_info*>(data.data())->angular_velocity; }
+        float3   get_angular_acceleration() const { return reinterpret_cast<const pose_info*>(data.data())->angular_acceleration; }
+        uint32_t get_tracker_confidence()   const { return reinterpret_cast<const pose_info*>(data.data())->tracker_confidence; }
+        uint32_t get_mapper_confidence()    const { return reinterpret_cast<const pose_info*>(data.data())->mapper_confidence; }
+    };
+
+    MAP_EXTENSION(RS2_EXTENSION_POSE_FRAME, librealsense::pose_frame);
+
 
     class archive_interface : public sensor_part
     {
@@ -389,6 +459,7 @@ namespace librealsense
 
         virtual frame_interface* publish_frame(frame_interface* frame) = 0;
         virtual void unpublish_frame(frame_interface* frame) = 0;
+        virtual void keep_frame(frame_interface* frame) = 0;
 
         virtual ~archive_interface() = default;
 
