@@ -1088,7 +1088,7 @@ namespace librealsense
                 hid_device_info hid_dev_info{};
                 if(!get_hid_device_info(elem.c_str(), hid_dev_info))
                 {
-                    LOG_WARNING("Failed to read busnum/devnum. Device Path: " << elem);
+                    //LOG_WARNING("Failed to read busnum/devnum. Device Path: " << elem);
                     continue;
                 }
                 action(hid_dev_info);
