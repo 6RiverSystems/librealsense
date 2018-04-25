@@ -413,6 +413,11 @@ describe('Sensor tests', function() {
         assert.equal(typeof p.width, 'number');
         assert.equal(typeof p.height, 'number');
         const intrin = p.getIntrinsics();
+        // some stream profiles have no intrinsics, and undefined is returned
+        // so bypass these cases
+        if (!intrin) {
+          return;
+        }
         assert.equal('width' in intrin, true);
         assert.equal('height' in intrin, true);
         assert.equal('ppx' in intrin, true);
@@ -444,9 +449,12 @@ describe('Sensor tests', function() {
       sensors[0].open(profiles0[0]);
       sensors[0].start((frame) => {
         assert.equal(frame instanceof rs2.Frame, true);
-        sensors[0].stop();
-        sensors[0].close();
-        resolve();
+        // Add a timeout to stop to avoid failure during playback test
+        setTimeout(() => {
+          sensors[0].stop();
+          sensors[0].close();
+          resolve();
+        }, 0);
       });
     });
   });

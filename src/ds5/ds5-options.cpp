@@ -99,9 +99,9 @@ namespace librealsense
         switch (_option)
         {
         case RS2_OPTION_ASIC_TEMPERATURE:
-            return "Current Asic Temperature";
+            return "Current Asic Temperature (degree celsius)";
         case RS2_OPTION_PROJECTOR_TEMPERATURE:
-            return "Current Projector Temperature";
+            return "Current Projector Temperature (degree celsius)";
         default:
             throw invalid_value_exception(to_string() << rs2_option_to_string(_option) << " is not temperature option!");
         }
@@ -152,7 +152,7 @@ namespace librealsense
 
     const char* motion_module_temperature_option::get_description() const
     {
-        return "Current Motion-Module Temperature";
+        return "Current Motion-Module Temperature (degree celsius)";
     }
 
     motion_module_temperature_option::motion_module_temperature_option(hid_sensor& ep)
@@ -288,6 +288,29 @@ namespace librealsense
         {
             throw invalid_value_exception(to_string() << "auto_exposure_mode: get_value_description(...) failed! Description of value " << val << " is not found.");
         }
+    }
+
+    auto_exposure_step_option::auto_exposure_step_option(std::shared_ptr<auto_exposure_mechanism> auto_exposure,
+        std::shared_ptr<auto_exposure_state> auto_exposure_state,
+        const option_range& opt_range)
+        : option_base(opt_range),
+        _auto_exposure_state(auto_exposure_state),
+        _auto_exposure(auto_exposure)
+    {}
+
+    void auto_exposure_step_option::set(float value)
+    {
+        if (!std::isnormal(_opt_range.step) || ((value < _opt_range.min) || (value > _opt_range.max)))
+            throw invalid_value_exception(to_string() << "set(auto_exposure_step_option) failed! Given value " << value << " is out of range.");
+
+        _auto_exposure_state->set_auto_exposure_step(value);
+        _auto_exposure->update_auto_exposure_state(*_auto_exposure_state);
+        _recording_function(*this);
+    }
+
+    float auto_exposure_step_option::query() const
+    {
+        return static_cast<float>(_auto_exposure_state->get_auto_exposure_step());
     }
 
     auto_exposure_antiflicker_rate_option::auto_exposure_antiflicker_rate_option(std::shared_ptr<auto_exposure_mechanism> auto_exposure,

@@ -48,8 +48,8 @@ describe('Disparity transform tests', function() {
   });
 });
 
-describe('Points.exportToPly', function() {
-  it('exportToPly', () => {
+describe('Points and Pointcloud test', function() {
+  it('Points.exportToPly', () => {
     const pc = new rs2.PointCloud();
     const pipe = new rs2.Pipeline();
     const file = 'points.ply';
@@ -60,6 +60,15 @@ describe('Points.exportToPly', function() {
     assert.equal(fs.existsSync(file), true);
     fs.unlinkSync(file);
     pipe.stop();
+    rs2.cleanup();
+  });
+  it('Pointcloud options API test', () => {
+    const pc = new rs2.PointCloud();
+    for (let i = rs2.option.OPTION_BACKLIGHT_COMPENSATION; i < rs2.option.OPTION_COUNT; i++) {
+      if (pc.supportsOption(i)) {
+        assert.equal(typeof pc.getOption(i), 'number');
+      }
+    }
     rs2.cleanup();
   });
 });
@@ -251,5 +260,149 @@ describe('enum value test', function() {
     for (let i = 0; i < obj.FRAME_METADATA_COUNT; i++) {
       assert.equal(typeof obj.frameMetadataToString(i), 'string');
     }
+  });
+  it('stream test', () => {
+    const obj = rs2.stream;
+    const numberAttrs = [
+      'STREAM_ANY',
+      'STREAM_DEPTH',
+      'STREAM_COLOR',
+      'STREAM_INFRARED',
+      'STREAM_FISHEYE',
+      'STREAM_GYRO',
+      'STREAM_ACCEL',
+      'STREAM_GPIO',
+      'STREAM_POSE',
+      'STREAM_CONFIDENCE',
+    ];
+    const strAttrs = [
+      'stream_any',
+      'stream_depth',
+      'stream_color',
+      'stream_infrared',
+      'stream_fisheye',
+      'stream_gyro',
+      'stream_accel',
+      'stream_gpio',
+      'stream_pose',
+      'stream_confidence',
+    ];
+    numberAttrs.forEach((attr) => {
+      assert.equal(typeof obj[attr], 'number');
+    });
+    strAttrs.forEach((attr) => {
+      assert.equal(typeof obj[attr], 'string');
+    });
+    for (let i = 0; i < obj.STREAM_COUNT; i++) {
+      assert.equal(typeof obj.streamToString(i), 'string');
+    }
+  });
+  it('camera_info test', () => {
+    const obj = rs2.camera_info;
+    const numberAttrs = [
+      'CAMERA_INFO_NAME',
+      'CAMERA_INFO_SERIAL_NUMBER',
+      'CAMERA_INFO_FIRMWARE_VERSION',
+      'CAMERA_INFO_PHYSICAL_PORT',
+      'CAMERA_INFO_DEBUG_OP_CODE',
+      'CAMERA_INFO_ADVANCED_MODE',
+      'CAMERA_INFO_PRODUCT_ID',
+      'CAMERA_INFO_CAMERA_LOCKED',
+      'CAMERA_INFO_USB_TYPE_DESCRIPTOR',
+    ];
+    const strAttrs = [
+      'camera_info_name',
+      'camera_info_serial_number',
+      'camera_info_firmware_version',
+      'camera_info_physical_port',
+      'camera_info_debug_op_code',
+      'camera_info_advanced_mode',
+      'camera_info_product_id',
+      'camera_info_camera_locked',
+      'camera_info_usb_type_descriptor',
+    ];
+    numberAttrs.forEach((attr) => {
+      assert.equal(typeof obj[attr], 'number');
+    });
+    strAttrs.forEach((attr) => {
+      assert.equal(typeof obj[attr], 'string');
+    });
+    for (let i = 0; i < obj.CAMERA_INFO_COUNT; i++) {
+      assert.equal(typeof obj.cameraInfoToString(i), 'string');
+    }
+  });
+});
+
+describe('infrared frame tests', function() {
+  let ctx;
+  let pipe;
+  let cfg;
+  before(function() {
+    ctx = new rs2.Context();
+    pipe = new rs2.Pipeline(ctx);
+    cfg = new rs2.Config();
+  });
+
+  after(function() {
+    rs2.cleanup();
+  });
+
+  it('getInfraredFrame', () => {
+    cfg.enableStream(rs2.stream.STREAM_INFRARED, 1, 640, 480, rs2.format.FORMAT_Y8, 60);
+    pipe.start(cfg);
+    const frames = pipe.waitForFrames();
+    assert.equal(frames.size === 1, true);
+    let frame = frames.getInfraredFrame(1);
+    assert.equal(frame.profile.streamType === rs2.stream.STREAM_INFRARED, true);
+    assert.equal(frame.profile.streamIndex === 1, true);
+
+    // Get the frame that first match
+    frame = frames.getInfraredFrame();
+    assert.equal(frame.profile.streamType === rs2.stream.STREAM_INFRARED, true);
+    assert.equal(frame.profile.streamIndex === 1, true);
+    pipe.stop();
+  });
+});
+
+describe('Native error tests', function() {
+  it('trigger native error test', () => {
+    const file = 'test.rec';
+    fs.writeFileSync(file, 'dummy');
+    const ctx = new rs2.Context();
+    assert.throws(() => {
+      ctx.loadDevice(file);
+    }, (err) => {
+      assert.equal(err instanceof TypeError, true);
+      let errInfo = rs2.getError();
+      assert.equal(errInfo.recoverable, false);
+      assert.equal(typeof errInfo.description, 'string');
+      assert.equal(typeof errInfo.nativeFunction, 'string');
+      return true;
+    });
+    rs2.cleanup();
+    fs.unlinkSync(file);
+  });
+});
+
+describe('ROI test', function() {
+  it('set/get ROI test', () => {
+    let ctx = new rs2.Context();
+    let sensors = ctx.querySensors();
+    sensors.forEach((s) => {
+      let roi = rs2.ROISensor.from(s);
+      if (roi) {
+        roi.setRegionOfInterest(1, 1, 10, 10);
+        let val = roi.getRegionOfInterest();
+        if (val) {
+          assert.equal(val.minX, 1);
+          assert.equal(val.minY, 1);
+          assert.equal(val.maxX, 10);
+          assert.equal(val.maxY, 10);
+        } else {
+          assert.equal(rs2.getError() instanceof Object, true);
+        }
+      }
+    });
+    rs2.cleanup();
   });
 });

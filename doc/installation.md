@@ -1,6 +1,7 @@
 # Linux Ubuntu Installation
 
 **Note:** Due to the USB 3.0 translation layer between native hardware and virtual machine, the *librealsense* team does not support installation in a VM. If you do choose to try it, we recommend using VMware Workstation Player, and not Oracle VirtualBox for proper emulation of the USB3 controller.
+<br><br> Please ensure to work with the supported Kernel versions listed here and verify that the kernek is updated properly according to the instructions.
 
 ## Ubuntu Build Dependencies
 
@@ -61,6 +62,15 @@ Several scripts below invoke `wget, git, add-apt-repository` which may be blocke
     *glfw3*:
     * On Ubuntu 16.04 install glfw3 via `sudo apt-get install libglfw3-dev`
     * On Ubuntu 14.04 or when running of Ubuntu 16.04 live-disk, please use `./scripts/install_glfw3.sh`
+    
+   6. TM1-specifics:
+    * Tracking Module requires *hid_sensor_custom* kernel module to operate properly.
+      Due to TM1's power-up sequence constrains, this driver is required to be loaded during boot for the HW to be properly initialized.
+
+      In order to accomplish this add the driver's name *hid_sensor_custom* to `/etc/modules` file, eg:
+      ```sh
+      echo 'hid_sensor_custom' | sudo tee -a /etc/modules`
+      ```
 
 ## Building librealsense2 SDK
   * On Ubuntu 14.04, update your build toolchain to *gcc-5*:

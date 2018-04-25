@@ -40,8 +40,6 @@ class Device {
     sensors.forEach((s) => {
       if (s.isDepthSensor()) {
         array.push(new DepthSensor(s));
-      } else if (s.isROISensor()) {
-        array.push(new ROISensor(s));
       } else {
         array.push(new Sensor(s));
       }
@@ -83,6 +81,8 @@ class Device {
    * <br> undefined is not supported.
    * @property {Boolean|undefined} cameraLocked - True if EEPROM is locked. <br> undefined is not
    * supported.
+   * @property {String|undefined} usbTypeDescriptor - Designated USB specification: USB2/USB3.
+   * <br> undefined is not supported.
    * @see [Device.getCameraInfo()]{@link Device#getCameraInfo}
    */
 
@@ -128,6 +128,10 @@ class Device {
       }
       if (this.cxxDev.supportsCameraInfo(camera_info.CAMERA_INFO_CAMERA_LOCKED)) {
         result.cameraLocked = this.cxxDev.getCameraInfo(camera_info.CAMERA_INFO_CAMERA_LOCKED);
+      }
+      if (this.cxxDev.supportsCameraInfo(camera_info.CAMERA_INFO_USB_TYPE_DESCRIPTOR)) {
+        result.usbTypeDescriptor = this.cxxDev.getCameraInfo(
+            camera_info.CAMERA_INFO_USB_TYPE_DESCRIPTOR);
       }
       return result;
     } else {
@@ -516,7 +520,7 @@ class VideoStreamProfile extends StreamProfile {
 
   /**
    * When called on a VideoStreamProfile, returns the intrinsics of specific stream configuration
-   * @return {IntrinsicsObject}
+   * @return {IntrinsicsObject|undefined}
    */
   getIntrinsics() {
     return this.cxxProfile.getVideoStreamIntrinsics();
@@ -675,12 +679,16 @@ class Options {
 class Sensor extends Options {
   /**
    * Construct a Sensor object, representing a RealSense camera subdevice
+   * By default, native resources associated with a Sensor object are freed
+   * automatically during cleanup.
    */
-  constructor(sensor) {
-    super(sensor);
-    this.cxxSensor = sensor;
+  constructor(cxxSensor, autoDelete = true) {
+    super(cxxSensor);
+    this.cxxSensor = cxxSensor;
     this._events = new EventEmitter();
-    internal.addObject(this);
+    if (autoDelete === true) {
+      internal.addObject(this);
+    }
   }
 
   /**
@@ -765,7 +773,7 @@ class Sensor extends Options {
   * @return {undefined} No return value
   */
   destroy() {
-    this.events_ = null;
+    this._events = null;
     if (this.cxxSensor) {
       this.cxxSensor.destroy();
       this.cxxSensor = undefined;
@@ -939,11 +947,26 @@ class Sensor extends Options {
  */
 class ROISensor extends Sensor {
   /**
-   * Construct a ROISensor object, representing a RealSense camera subdevice
-   *
+   * Create a ROISensor out of another sensor
+   * @param {Sensor} sensor a sensor object
+   * @return {ROISensor|undefined} return a ROISensor if the sensor can be
+   * treated as a ROISensor, otherwise return undefined.
    */
-   constructor(sensor) {
-    super(sensor);
+  static from(sensor) {
+    if (sensor.cxxSensor.isROISensor()) {
+      return new ROISensor(sensor.cxxSensor);
+    }
+    return undefined;
+  }
+
+  /**
+   * Construct a ROISensor object, representing a RealSense camera subdevice
+   * The newly created ROISensor object shares native resources with the sensor
+   * argument. So the new object shouldn't be freed automatically to make
+   * sure resources released only once during cleanup.
+   */
+   constructor(cxxSensor) {
+    super(cxxSensor, false);
   }
 
   /**
@@ -1005,11 +1028,11 @@ class ROISensor extends Sensor {
       minY = arguments[1];
       maxX = arguments[2];
       maxY = arguments[3];
-      this.cxxSensor.setRegionOfInterest(minX, minY, maxX, maxY);
     } else {
       throw new TypeError(
           'setRegionOfInterest(region) expects a RegionOfInterestObject as argument');
     }
+    this.cxxSensor.setRegionOfInterest(minX, minY, maxX, maxY);
   }
 }
 
@@ -1037,6 +1060,19 @@ class DepthSensor extends Sensor {
 const internal = {
   ctx: [],
   objs: [],
+
+  // Register error callback to native code
+  registerErrorCallback: function() {
+    RS2.registerErrorCallback(this, 'errorCallback');
+  },
+
+  // The callback method called from native side
+  errorCallback: function(error) {
+    if (error.recoverable === false) {
+      throw new TypeError('Unrecoverable error, native function ' + error.nativeFunction + ': ' +
+          error.description);
+    }
+  },
 
   addContext: function(c) {
     this.ctx.push(c);
@@ -1215,14 +1251,18 @@ class Context {
    * Create a PlaybackDevice to playback recored data file.
    *
    * @param {String} file - the file path
-   * @return {PlaybackDevice}
+   * @return {PlaybackDevice|undefined}
    */
   loadDevice(file) {
     const funcName = 'Context.loadDevice()';
     checkArgumentLength(1, 1, arguments.length, funcName);
     checkArgumentType(arguments, 'string', 0, funcName);
     checkFileExistence(file);
-    return new PlaybackDevice(this.cxxCtx.loadDeviceFile(file), file);
+    const cxxDev = this.cxxCtx.loadDeviceFile(file);
+    if (!cxxDev) {
+      return undefined;
+    }
+    return new PlaybackDevice(cxxDev, file);
   }
 
   /**
@@ -1541,9 +1581,11 @@ internal.PlaybackContext = PlaybackContext;
  * In addition, given non-depth frame, the block will align texture coordinate to the non-depth
  * stream
  */
-class PointCloud {
+class PointCloud extends Options {
   constructor() {
+    super();
     this.cxxPointCloud = new RS2.RSPointCloud();
+    this.setCxxOptionsObject(this.cxxPointCloud);
     this.pointsFrame = new Points();
   }
 
@@ -1704,8 +1746,7 @@ class Align {
  * @property {Integer} streamType - The stream type of the frame.
  * see <code>enum {@link stream}</code>
  * @property {Integer} bitsPerPixel - The number of bits per pixel
- * @property {string} timestampDomain - Get the domain (clock name) of timestamp value.
- *
+ * @property {Integer} timestampDomain - Get the domain (clock name) of timestamp value.
  */
 class Frame {
   constructor(cxxFrame) {
@@ -1933,10 +1974,10 @@ class Frame {
  *
  * @property {Integer} width - The image width in pixels.
  * @property {Integer} height - The image height in pixels.
+ * @property {Integer} dataByteLength - The length in bytes
  * @property {Integer} strideInBytes - The stride of the frame. The unit is number of bytes.
  * @property {Integer} bitsPerPixel - The number of bits per pixel
- * @property {string} timestampDomain - Get the domain (clock name) of timestamp value.
- *
+ * @property {Integer} bytesPerPixel - The number of bytes per pixel
  */
 class VideoFrame extends Frame {
   constructor(frame) {
@@ -2203,11 +2244,10 @@ class PoseFrame extends Frame {
 
   /**
    * Get the pose data
-   * @return {PoseData}
+   * @return {PoseData|undefined}
    */
   get poseData() {
-    this.cxxFrame.getPoseData(this._pose);
-    return this._pose;
+    return (this.cxxFrame.getPoseData(this._pose)) ? this._pose : undefined;
   }
 }
 
@@ -2222,6 +2262,7 @@ class FrameSet {
   constructor(cxxFrameSet) {
     this.cxxFrameSet = cxxFrameSet || new RS2.RSFrameSet();
     this.cache = [];
+    this.cacheMetadata = [];
     this.__update();
   }
 
@@ -2240,7 +2281,7 @@ class FrameSet {
    * @return {DepthFrame|undefined}
    */
   get depthFrame() {
-    return this.getFrame(stream.STREAM_DEPTH);
+    return this.getFrame(stream.STREAM_DEPTH, 0);
   }
 
   /**
@@ -2249,20 +2290,36 @@ class FrameSet {
    * @return {VideoFrame|undefined}
    */
   get colorFrame() {
-    return this.getFrame(stream.STREAM_COLOR);
+    return this.getFrame(stream.STREAM_COLOR, 0);
+  }
+
+  /**
+   * Get the infrared frame
+   * @param {Integer} streamIndex index of the expected infrared stream
+   * @return {VideoFrame|undefined}
+   */
+  getInfraredFrame(streamIndex = 0) {
+    const funcName = 'FrameSet.getInfraredFrame()';
+    checkArgumentLength(0, 1, arguments.length, funcName);
+    if (arguments.length === 1) {
+      checkArgumentType(arguments, 'integer', 0, funcName);
+    }
+    return this.getFrame(stream.STREAM_INFRARED, streamIndex);
   }
 
   /**
    * Get the frame at specified index
    *
-   * @param {Integer} index the index of the expected frame
+   * @param {Integer} index the index of the expected frame (Note: this is not
+   * stream index)
    * @return {DepthFrame|VideoFrame|Frame|undefined}
    */
   at(index) {
     const funcName = 'FrameSet.at()';
     checkArgumentLength(1, 1, arguments.length, funcName);
-    checkArgumentType(arguments, 'number', 0, 'FrameSet.at()', 0, this.size);
-    return this.getFrame(this.cxxFrameSet.indexToStream(index));
+    checkArgumentType(arguments, 'number', 0, funcName, 0, this.size);
+    return this.getFrame(this.cxxFrameSet.indexToStream(index),
+        this.cxxFrameSet.indexToStreamIndex(index));
   }
 
   /**
@@ -2280,36 +2337,57 @@ class FrameSet {
     }
   }
 
-  __internalGetFrame(stream) {
-    return Frame._internalCreateFrame(this.cxxFrameSet.getFrame(stream));
+  __internalGetFrame(stream, streamIndex) {
+    return Frame._internalCreateFrame(this.cxxFrameSet.getFrame(stream, streamIndex));
   }
 
-  __internalGetFrameCache(stream, callback) {
-    if (! this.cache[stream]) {
-      this.cache[stream] = callback(stream);
+  __internalFindFrameInCache(stream, streamIndex) {
+    for (const [i, data] of this.cacheMetadata.entries()) {
+      if (data.stream !== stream) {
+        continue;
+      }
+      if (!streamIndex || (streamIndex && streamIndex === data.streamIndex)) {
+        return i;
+      }
+    }
+    return undefined;
+  }
+
+  __internalGetFrameCache(stream, streamIndex, callback) {
+    let idx = this.__internalFindFrameInCache(stream, streamIndex);
+    if (idx === undefined) {
+      this.cache.push(callback(stream, streamIndex));
+      this.cacheMetadata.push({stream: stream, streamIndex: streamIndex});
+      idx = this.cache.length - 1;
     } else {
-      let frame = this.cache[stream];
+      let frame = this.cache[idx];
       if (!frame.cxxFrame) {
         frame.cxxFrame = new RS2.RSFrame();
       }
-      if (! this.cxxFrameSet.replaceFrame(stream, frame.cxxFrame)) {
-        this.cache[stream] = undefined;
+      if (! this.cxxFrameSet.replaceFrame(stream, streamIndex, frame.cxxFrame)) {
+        this.cache[idx] = undefined;
+        this.cacheMetadata[idx] = undefined;
       }
     }
-    return this.cache[stream];
+    return this.cache[idx];
   }
 
   /**
    * Get the frame with specified stream
    *
    * @param {Integer|String} stream stream type of the frame
+   * @param {Integer} streamIndex index of the stream, 0 means the first
+   * matching stream
    * @return {DepthFrame|VideoFrame|Frame|undefined}
    */
-  getFrame(stream) {
+  getFrame(stream, streamIndex = 0) {
     const funcName = 'FrameSet.getFrame()';
-    checkArgumentLength(1, 1, arguments.length, funcName);
+    checkArgumentLength(1, 2, arguments.length, funcName);
     const s = checkArgumentType(arguments, constants.stream, 0, funcName);
-    return this.__internalGetFrameCache(s, this.__internalGetFrame.bind(this));
+    if (arguments.length === 2) {
+      checkArgumentType(arguments, 'integer', 1, funcName);
+    }
+    return this.__internalGetFrameCache(s, streamIndex, this.__internalGetFrame.bind(this));
   }
 
   __update() {
@@ -2322,6 +2400,8 @@ class FrameSet {
         f.release();
       }
     });
+    this.cache = [];
+    this.cacheMetadata = [];
   }
 
   release() {
@@ -2336,7 +2416,6 @@ class FrameSet {
    */
   destroy() {
     this.release();
-    this.cache = [];
     this.cxxFrameSet = undefined;
   }
 }
@@ -3888,6 +3967,16 @@ const stream = {
      * through GPIO . <br>Equivalent to its uppercase counterpart.
      */
     stream_gpio: 'gpio',
+    /**
+     * String literal of <code>'pose'</code>. <br>6 Degrees of Freedom pose data, calculated by
+     * RealSense device. <br>Equivalent to its uppercase counterpart.
+     */
+    stream_pose: 'pose',
+    /**
+     * String literal of <code>'confidence'</code>. <br>Confidence stream
+     * <br>Equivalent to its uppercase counterpart.
+     */
+    stream_confidence: 'confidence',
 
     /**
      * Any stream. <br>Equivalent to its lowercase counterpart.
@@ -3936,7 +4025,17 @@ const stream = {
      * @type {Integer}
      */
     STREAM_GPIO: RS2.RS2_STREAM_GPIO,
-
+    /**
+     * 6 Degrees of Freedom pose data, calculated by RealSense device. <br>Equivalent to its
+     * lowercase counterpart.
+     * @type {Integer}
+     */
+    STREAM_POSE: RS2.RS2_STREAM_POSE,
+    /**
+     * Confidence stream. <br>Equivalent to its lowercase counterpart.
+     * @type {Integer}
+     */
+    STREAM_CONFIDENCE: RS2.RS2_STREAM_CONFIDENCE,
     /**
      * Number of enumeration values. Not a valid input: intended to be used in for-loops.
      * @type {Integer}
@@ -3969,6 +4068,10 @@ const stream = {
           return this.stream_accel;
         case this.STREAM_GPIO:
           return this.stream_gpio;
+        case this.STREAM_POSE:
+          return this.stream_pose;
+        case this.STREAM_CONFIDENCE:
+          return this.stream_confidence;
       }
     },
 };
@@ -4261,6 +4364,12 @@ const option = {
    */
   option_stereo_baseline: 'stereo-baseline',
   /**
+   * String literal of <code>'auto-exposure-converage-step'</code>. <br>Allows dynamically ajust
+   * the converge step value of the target exposure in Auto-Exposure algorithm
+   * <br>Equivalent to its uppercase counterpart.
+   */
+  option_auto_exposure_converge_step: 'auto-exposure-converge-step',
+  /**
    * Enable / disable color backlight compensatio.<br>Equivalent to its lowercase counterpart.
    * @type {Integer}
    */
@@ -4481,17 +4590,24 @@ const option = {
    */
   OPTION_FILTER_SMOOTH_DELTA: RS2.RS2_OPTION_FILTER_SMOOTH_DELTA,
   /**
+   * Enhance depth data post-processing with holes filling where appropriate
+   * <br> Equivalent to its lowercase counterpart.
+   * @type {Integer}
+   */
+  OPTION_HOLES_FILL: RS2.RS2_OPTION_HOLES_FILL,
+  /**
    * The distance in mm between the first and the second imagers in stereo-based depth cameras
    * <br>Equivalent to its lowercase counterpart
    * @type {Integer}
    */
   OPTION_STEREO_BASELINE: RS2.RS2_OPTION_STEREO_BASELINE,
   /**
-   * Enhance depth data post-processing with holes filling where appropriate
-   * <br> Equivalent to its lowercase counterpart.
+   * Allows dynamically ajust the converge step value of the target exposure in Auto-Exposure
+   * algorithm
+   * <br>Equivalent to its lowercase counterpart
    * @type {Integer}
    */
-  OPTION_HOLES_FILL: RS2.RS2_OPTION_HOLES_FILL,
+  OPTION_AUTO_EXPOSURE_CONVERGE_STEP: RS2.RS2_OPTION_AUTO_EXPOSURE_CONVERGE_STEP,
   /**
    * Number of enumeration values. Not a valid input: intended to be used in for-loops.
    * @type {Integer}
@@ -4590,6 +4706,8 @@ const option = {
         return this.option_holes_fill;
       case this.OPTION_STEREO_BASELINE:
         return this.option_stereo_baseline;
+      case this.OPTION_AUTO_EXPOSURE_CONVERGE_STEP:
+        return this.option_auto_exposure_converge_step;
       default:
         throw new TypeError(
             'option.optionToString(option) expects a valid value as the 1st argument');
@@ -4650,6 +4768,11 @@ const camera_info = {
    * <br>Equivalent to its uppercase counterpart.
    */
   camera_info_camera_locked: 'camera-locked',
+  /**
+   * String literal of <code>'usb-type-descriptor'</code>. <br>Designated USB specification:
+   * USB2/USB3. <br>Equivalent to its uppercase counterpart.
+   */
+  camera_info_usb_type_descriptor: 'usb-type-descriptor',
 
   /**
    * Device friendly name. <br>Equivalent to its lowercase counterpart.
@@ -4693,7 +4816,11 @@ const camera_info = {
    * @type {Integer}
    */
   CAMERA_INFO_CAMERA_LOCKED: RS2.RS2_CAMERA_INFO_CAMERA_LOCKED,
-
+  /**
+   * Designated USB specification: USB2/USB3. <br>Equivalent to its lowercase counterpart.
+   * @type {Integer}
+   */
+  CAMERA_INFO_USB_TYPE_DESCRIPTOR: RS2.RS2_CAMERA_INFO_USB_TYPE_DESCRIPTOR,
   /**
    * Number of enumeration values. Not a valid input: intended to be used in for-loops.
    * @type {Integer}
@@ -4726,6 +4853,8 @@ const camera_info = {
         return this.camera_info_product_id;
       case this.CAMERA_INFO_CAMERA_LOCKED:
         return this.camera_info_camera_locked;
+      case this.CAMERA_INFO_USB_TYPE_DESCRIPTOR:
+        return this.camera_info_usb_type_descriptor;
     }
   },
 };
@@ -5610,13 +5739,36 @@ const constants = {
   playback_status: playback_status,
 };
 
+/**
+ * Cleanup resources
+ */
 function cleanup() {
   internal.cleanup();
   RS2.globalCleanup();
 }
 
+/**
+ * Error Information returned from native SDK
+ * @typedef {Object} ErrorInfoObject
+ * @property {Boolean} recoverable - True if the error is a recoverable error
+ * @property {String} description - Detailed description of the error
+ * @property {String} nativeFunction - Native function that triggered the error
+ * @see [getError()]{@link getError}
+ */
+
+/**
+ * Get the error info
+ * User could call this method to get the detailed error info if the previous
+ * API failed.
+ * @return {ErrorInfoObject|undefined} If there is no error, undefined is returned
+ */
+function getError() {
+  return RS2.getError();
+}
+
 module.exports = {
   cleanup: cleanup,
+  getError: getError,
 
   Context: Context,
   Pipeline: Pipeline,
@@ -5672,3 +5824,5 @@ module.exports = {
 
   stringConstantToIntegerValue: str2Int,
 };
+
+internal.registerErrorCallback();

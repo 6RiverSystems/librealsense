@@ -8,6 +8,7 @@
 
 #include <array>
 #include <chrono>
+#include "l500/l500.h"
 #include "ivcam/sr300.h"
 #include "ds5/ds5-factory.h"
 #include "ds5/ds5-timestamp.h"
@@ -307,7 +308,7 @@ namespace librealsense
     }
 
     std::vector<std::shared_ptr<device_info>> context::create_devices(platform::backend_device_group devices,
-                                                                      const std::map<std::string, std::shared_ptr<device_info>>& playback_devices) const
+                                                                      const std::map<std::string, std::weak_ptr<device_info>>& playback_devices) const
     {
         std::vector<std::shared_ptr<device_info>> list;
 
@@ -319,6 +320,9 @@ namespace librealsense
         auto tm2_devices = tm2_info::pick_tm2_devices(ctx, _tm2_context->get_manager(), _tm2_context->query_devices());
         std::copy(begin(tm2_devices), end(tm2_devices), std::back_inserter(list));
 #endif
+
+        auto l500_devices = l500_info::pick_l500_devices(ctx, devices.uvc_devices, devices.usb_devices);
+        std::copy(begin(l500_devices), end(l500_devices), std::back_inserter(list));
 
         auto ds5_devices = ds5_info::pick_ds5_devices(ctx, devices);
         std::copy(begin(ds5_devices), end(ds5_devices), std::back_inserter(list));
@@ -334,7 +338,7 @@ namespace librealsense
 
         for (auto&& item : playback_devices)
         {
-            list.push_back(item.second);
+            list.push_back(item.second.lock());
         }
 
         return list;
@@ -343,8 +347,8 @@ namespace librealsense
 
     void context::on_device_changed(platform::backend_device_group old,
                                     platform::backend_device_group curr,
-                                    const std::map<std::string, std::shared_ptr<device_info>>& old_playback_devices,
-                                    const std::map<std::string, std::shared_ptr<device_info>>& new_playback_devices)
+                                    const std::map<std::string, std::weak_ptr<device_info>>& old_playback_devices,
+                                    const std::map<std::string, std::weak_ptr<device_info>>& new_playback_devices)
     {
         auto old_list = create_devices(old, old_playback_devices);
         auto new_list = create_devices(curr, new_playback_devices);
@@ -476,7 +480,8 @@ namespace librealsense
 
     std::shared_ptr<device_interface> context::add_device(const std::string& file)
     {
-        if (_playback_devices.find(file) != _playback_devices.end())
+        auto it = _playback_devices.find(file);
+        if (it != _playback_devices.end() && it->second.lock())
         {
             //Already exists
             throw librealsense::invalid_value_exception(to_string() << "File \"" << file << "\" already loaded to context");
