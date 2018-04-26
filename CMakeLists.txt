@@ -838,9 +838,9 @@ if(BUILD_EXAMPLES)
   add_subdirectory(tools)
 endif()
 
-if(BUILD_UNIT_TESTS)
-  add_subdirectory(unit-tests)
-endif()
+#if(BUILD_UNIT_TESTS)
+#  add_subdirectory(unit-tests)
+#endif()
 
 if (ENFORCE_METADATA)
   add_definitions(-DENFORCE_METADATA)
