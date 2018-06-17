@@ -483,8 +483,10 @@ namespace librealsense
                     }
                     if(!valid_path)
                     {
-                        LOG_WARNING("Failed to read busnum/devnum. Device Path: " << path);
-                        continue;
+			 // On the Jetson TX, the camera module is CSI & I2C and does not report as
+                         // this code expects. Comment out for now.
+                         // LOG_WARNING("Failed to read busnum/devnum. Device Path: " << path);
+                         continue;
                     }
 
                     std::string modalias;

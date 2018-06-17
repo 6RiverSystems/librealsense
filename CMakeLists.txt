@@ -77,6 +77,24 @@ elseif(COMPILER_SUPPORTS_CXX0X)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
 endif()
 
+option(USE_CUDA "Use CUDA for GPU acceleration" ON)
+if (USE_CUDA)
+    add_definitions(-DUSE_CUDA)
+endif()
+
+
+if (USE_CUDA)
+    find_package(CUDA REQUIRED)
+    # Setup CUDA
+    set(
+        CUDA_NVCC_FLAGS
+        ${CUDA_NVCC_FLAGS};
+        -Xcompiler -fPIC;
+        -O3 -gencode arch=compute_53,code=sm_53
+        -gencode arch=compute_62,code=sm_62
+    )
+endif()
+
 # This parameter is meant for disabling graphical examples when building for
 # save-to-disk targets.
 option(BUILD_GRAPHICAL_EXAMPLES "Build graphical examples and tools." ON)
@@ -323,6 +341,27 @@ set(REALSENSE_HPP
 
     src/media/ros/ros_file_format.h
 )
+
+if (USE_CUDA)
+    # Add the CUDA files
+    set(REALSENSE_CUDA_CUH
+    src/cuda/cuda-conversion.cuh
+    )
+
+    set(REALSENSE_CUDA
+    src/cuda/cuda-conversion.cu
+    )
+
+    # This is for dynamic linking ...
+    cuda_compile(CUDA_OBJS ${REALSENSE_CUDA})
+    set(REALSENSE_CPP ${REALSENSE_CPP} ${CUDA_OBJS})
+    set(REALSENSE_HPP ${REALSENSE_HPP} ${REALSENSE_CUDA_CUH})
+    # End Dynamic Linking
+
+    include_directories(
+      ${CUDA_INCLUDE_DIRS}
+    )
+endif()
 
 if(BUILD_EASYLOGGINGPP)
     list(APPEND REALSENSE_CPP third-party/easyloggingpp/src/easylogging++.cc)
@@ -768,6 +807,11 @@ else()
     target_link_libraries(realsense2 PRIVATE ${LIBUSB1_LIBRARIES})
 endif()
 
+if (USE_CUDA)
+    # CUDA Libraries
+    link_directories($CUDA_LIBRARY_DIRS)
+    target_link_libraries(realsense2 PRIVATE ${CUDA_LIBRARIES})
+endif()
 
 add_definitions(-DELPP_THREAD_SAFE)
 add_definitions(-DELPP_NO_DEFAULT_LOG_FILE)
