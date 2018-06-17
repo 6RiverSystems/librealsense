@@ -10,6 +10,78 @@
 #include <tmmintrin.h> // For SSE3 intrinsic used in unpack_yuy2_sse
 #endif
 
+#ifdef USE_CUDA
+
+#include "cuda/cuda-conversion.cuh"
+
+namespace librealsense
+{
+
+template<rs2_format FORMAT> void unpack_yuy2_cuda(byte * const d[], const byte * s, int n)
+{
+    const uint8_t *src = reinterpret_cast<const uint8_t *>(s);
+    uint8_t *dst = reinterpret_cast<uint8_t *>(d[0]);
+
+    switch (FORMAT)
+    {
+    // Y8 and Y16 just rearrange bytes; this is probably faster than sending it off to the CUDA lands
+    case RS2_FORMAT_Y8:
+    case RS2_FORMAT_Y16:
+    {
+        auto src = reinterpret_cast<const uint8_t *>(s);
+        auto dst = reinterpret_cast<uint8_t *>(d[0]);
+        for (; n; n -= 16, src += 32)
+        {
+            if (FORMAT == RS2_FORMAT_Y8)
+            {
+                uint8_t out[16] = {
+                    src[0], src[2], src[4], src[6],
+                    src[8], src[10], src[12], src[14],
+                    src[16], src[18], src[20], src[22],
+                    src[24], src[26], src[28], src[30],
+                };
+                librealsense::copy(dst, out, sizeof out);
+                dst += sizeof out;
+                continue;
+            }
+
+            if (FORMAT == RS2_FORMAT_Y16)
+            {
+                // Y16 is little-endian.  We output Y << 8.
+                uint8_t out[32] = {
+                    0, src[0], 0, src[2], 0, src[4], 0, src[6],
+                    0, src[8], 0, src[10], 0, src[12], 0, src[14],
+                    0, src[16], 0, src[18], 0, src[20], 0, src[22],
+                    0, src[24], 0, src[26], 0, src[28], 0, src[30],
+                };
+                librealsense::copy(dst, out, sizeof out);
+                dst += sizeof out;
+                continue;
+            }
+        }
+    }
+        break ;
+
+    case RS2_FORMAT_RGB8:
+        unpack_yuy2_rgb8_cuda(src, dst, n);
+        break;
+    case RS2_FORMAT_BGR8:
+        unpack_yuy2_bgr8_cuda(src, dst, n);
+        break;
+    case RS2_FORMAT_RGBA8:
+        unpack_yuy2_rgb8a_cuda(src, dst, n);
+        break;
+    case RS2_FORMAT_BGRA8:
+        unpack_yuy2_bgr8a_cuda(src, dst, n);
+        break;
+    default:
+        assert(false);
+    }
+}
+}
+
+#endif
+
 #if defined (ANDROID) || (defined (__linux__) && !defined (__x86_64__))
 
 bool has_avx() { return false; }
@@ -301,9 +373,12 @@ namespace librealsense
     template<rs2_format FORMAT> void unpack_yuy2(byte * const d[], const byte * s, int width, int height)
     {
         auto n = width * height;
-        assert(n % 16 == 0); // All currently supported color resolutions are multiples of 16 pixels. Could easily extend support to other resolutions by copying final n<16 pixels into a zero-padded buffer and recursively calling self for final iteration.
+        assert(n % 16 == 0); // All currently supported color resolutions are multiples of 16 pixels. Could easily extend support to other resolutions by copying final n<16 pixels into a zero-padded buffer and recursively calling self for final iteration
+        #ifdef USE_CUDA
 
-        #ifdef __SSSE3__
+        unpack_yuy2_cuda<FORMAT>(d, s, n);
+
+        #elif __SSSE3__
         static bool do_avx = has_avx();
 
         if (do_avx)
@@ -968,8 +1043,8 @@ namespace librealsense
     const native_pixel_format pf_z16                      = { 'Z16 ', 1, 2, {  { requires_processing, &copy_pixels<2>,                               { { RS2_STREAM_DEPTH,          RS2_FORMAT_Z16 } } },
         // The Disparity_Z is not applicable for D4XX. TODO - merge with INVZ when confirmed
         /*{ false, &copy_pixels<2>,                                { { RS2_STREAM_DEPTH,    RS2_FORMAT_DISPARITY16 } } }*/ } };
-    const native_pixel_format pf_invz                     = { 'Z16 ', 1, 2, {  { false,               &copy_pixels<2>,                               { { RS2_STREAM_DEPTH,          RS2_FORMAT_Z16 } } } } };
-    const native_pixel_format pf_f200_invi                = { 'INVI', 1, 1, {  { false,               &copy_pixels<1>,                             { { { RS2_STREAM_INFRARED, 1 },  RS2_FORMAT_Y8  } } },
+    const native_pixel_format pf_invz                     = { 'Z16 ', 1, 2, {  { true,               &copy_pixels<2>,                               { { RS2_STREAM_DEPTH,          RS2_FORMAT_Z16 } } } } };
+    const native_pixel_format pf_f200_invi                = { 'INVI', 1, 1, {  { true,               &copy_pixels<1>,                             { { { RS2_STREAM_INFRARED, 1 },  RS2_FORMAT_Y8  } } },
                                                                                { true,                &unpack_y16_from_y8,                         { { { RS2_STREAM_INFRARED, 1 },  RS2_FORMAT_Y16 } } } } };
     const native_pixel_format pf_f200_inzi                = { 'INZI', 1, 3, {  { true,                &unpack_z16_y8_from_f200_inzi,                 { { RS2_STREAM_DEPTH,          RS2_FORMAT_Z16 },
                                                                                                                                                      { { RS2_STREAM_INFRARED, 1 },  RS2_FORMAT_Y8 } } },
