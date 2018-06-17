@@ -77,13 +77,9 @@ elseif(COMPILER_SUPPORTS_CXX0X)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
 endif()
 
-option(USE_CUDA "Use CUDA for GPU acceleration" ON)
-if (USE_CUDA)
-    add_definitions(-DUSE_CUDA)
-endif()
+include(FindCUDA)
 
-
-if (USE_CUDA)
+if (CUDA_FOUND)
     find_package(CUDA REQUIRED)
     # Setup CUDA
     set(
@@ -342,7 +338,7 @@ set(REALSENSE_HPP
     src/media/ros/ros_file_format.h
 )
 
-if (USE_CUDA)
+if (CUDA_FOUND)
     # Add the CUDA files
     set(REALSENSE_CUDA_CUH
     src/cuda/cuda-conversion.cuh
@@ -807,7 +803,7 @@ else()
     target_link_libraries(realsense2 PRIVATE ${LIBUSB1_LIBRARIES})
 endif()
 
-if (USE_CUDA)
+if (CUDA_FOUND)
     # CUDA Libraries
     link_directories($CUDA_LIBRARY_DIRS)
     target_link_libraries(realsense2 PRIVATE ${CUDA_LIBRARIES})

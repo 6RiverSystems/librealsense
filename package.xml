@@ -32,8 +32,4 @@
   <depend>libssl-dev</depend>
   <depend>dkms</depend>
   <depend>udev</depend>
-
-  <export>
-    <build_type>cmake</build_type>
-  </export>
 </package>
