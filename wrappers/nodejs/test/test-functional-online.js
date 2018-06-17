@@ -123,6 +123,7 @@ describe('enum value test', function() {
       'RS400_VISUAL_PRESET_HIGH_ACCURACY',
       'RS400_VISUAL_PRESET_HIGH_DENSITY',
       'RS400_VISUAL_PRESET_MEDIUM_DENSITY',
+      'RS400_VISUAL_PRESET_REMOVE_IR_PATTERN',
       'RS400_VISUAL_PRESET_COUNT',
     ];
     const strAttrs = [
@@ -132,6 +133,7 @@ describe('enum value test', function() {
       'rs400_visual_preset_high_accuracy',
       'rs400_visual_preset_high_density',
       'rs400_visual_preset_medium_density',
+      'rs400_visual_preset_remove_ir_pattern',
     ];
     numberAttrs.forEach((attr) => {
       assert.equal(typeof obj[attr], 'number');
@@ -209,6 +211,7 @@ describe('enum value test', function() {
       'NOTIFICATION_CATEGORY_HARDWARE_ERROR',
       'NOTIFICATION_CATEGORY_HARDWARE_EVENT',
       'NOTIFICATION_CATEGORY_UNKNOWN_ERROR',
+      'NOTIFICATION_CATEGORY_FIRMWARE_UPDATE_RECOMMENDED',
     ];
     const strAttrs = [
       'notification_category_frames_timeout',
@@ -216,6 +219,7 @@ describe('enum value test', function() {
       'notification_category_hardware_error',
       'notification_category_hardware_event',
       'notification_category_unknown_error',
+      'notification_category_firmware_update_recommended',
     ];
     numberAttrs.forEach((attr) => {
       assert.equal(typeof obj[attr], 'number');
@@ -303,6 +307,7 @@ describe('enum value test', function() {
       'CAMERA_INFO_NAME',
       'CAMERA_INFO_SERIAL_NUMBER',
       'CAMERA_INFO_FIRMWARE_VERSION',
+      'CAMERA_INFO_RECOMMENDED_FIRMWARE_VERSION',
       'CAMERA_INFO_PHYSICAL_PORT',
       'CAMERA_INFO_DEBUG_OP_CODE',
       'CAMERA_INFO_ADVANCED_MODE',
@@ -314,6 +319,7 @@ describe('enum value test', function() {
       'camera_info_name',
       'camera_info_serial_number',
       'camera_info_firmware_version',
+      'camera_info_recommended_firmware_version',
       'camera_info_physical_port',
       'camera_info_debug_op_code',
       'camera_info_advanced_mode',
@@ -330,6 +336,125 @@ describe('enum value test', function() {
     for (let i = 0; i < obj.CAMERA_INFO_COUNT; i++) {
       assert.equal(typeof obj.cameraInfoToString(i), 'string');
     }
+    let ctx = new rs2.Context();
+    let dev = ctx.queryDevices().devices[0];
+
+    for (let i = obj.CAMERA_INFO_NAME; i < obj.CAMERA_INFO_COUNT; i++) {
+      let info = dev.getCameraInfo(i);
+      assert.equal((info === undefined) || (typeof info === 'string'), true);
+    }
+    rs2.cleanup();
+  });
+  it('option test', () => {
+    const obj = rs2.option;
+    const numberAttrs = [
+      'OPTION_BACKLIGHT_COMPENSATION',
+      'OPTION_BRIGHTNESS',
+      'OPTION_CONTRAST',
+      'OPTION_EXPOSURE',
+      'OPTION_GAIN',
+      'OPTION_GAMMA',
+      'OPTION_HUE',
+      'OPTION_SATURATION',
+      'OPTION_SHARPNESS',
+      'OPTION_WHITE_BALANCE',
+      'OPTION_ENABLE_AUTO_EXPOSURE',
+      'OPTION_ENABLE_AUTO_WHITE_BALANCE',
+      'OPTION_VISUAL_PRESET',
+      'OPTION_LASER_POWER',
+      'OPTION_ACCURACY',
+      'OPTION_MOTION_RANGE',
+      'OPTION_FILTER_OPTION',
+      'OPTION_CONFIDENCE_THRESHOLD',
+      'OPTION_EMITTER_ENABLED',
+      'OPTION_FRAMES_QUEUE_SIZE',
+      'OPTION_TOTAL_FRAME_DROPS',
+      'OPTION_AUTO_EXPOSURE_MODE',
+      'OPTION_POWER_LINE_FREQUENCY',
+      'OPTION_ASIC_TEMPERATURE',
+      'OPTION_ERROR_POLLING_ENABLED',
+      'OPTION_PROJECTOR_TEMPERATURE',
+      'OPTION_OUTPUT_TRIGGER_ENABLED',
+      'OPTION_MOTION_MODULE_TEMPERATURE',
+      'OPTION_DEPTH_UNITS',
+      'OPTION_ENABLE_MOTION_CORRECTION',
+      'OPTION_AUTO_EXPOSURE_PRIORITY',
+      'OPTION_COLOR_SCHEME',
+      'OPTION_HISTOGRAM_EQUALIZATION_ENABLED',
+      'OPTION_MIN_DISTANCE',
+      'OPTION_MAX_DISTANCE',
+      'OPTION_TEXTURE_SOURCE',
+      'OPTION_FILTER_MAGNITUDE',
+      'OPTION_FILTER_SMOOTH_ALPHA',
+      'OPTION_FILTER_SMOOTH_DELTA',
+      'OPTION_HOLES_FILL',
+      'OPTION_STEREO_BASELINE',
+    ];
+    const strAttrs = [
+      'option_backlight_compensation',
+      'option_brightness',
+      'option_contrast',
+      'option_exposure',
+      'option_gain',
+      'option_gamma',
+      'option_hue',
+      'option_saturation',
+      'option_sharpness',
+      'option_white_balance',
+      'option_enable_auto_exposure',
+      'option_enable_auto_white_balance',
+      'option_visual_preset',
+      'option_laser_power',
+      'option_accuracy',
+      'option_motion_range',
+      'option_filter_option',
+      'option_confidence_threshold',
+      'option_emitter_enabled',
+      'option_frames_queue_size',
+      'option_total_frame_drops',
+      'option_auto_exposure_mode',
+      'option_power_line_frequency',
+      'option_asic_temperature',
+      'option_error_polling_enabled',
+      'option_projector_temperature',
+      'option_output_trigger_enabled',
+      'option_motion_module_temperature',
+      'option_depth_units',
+      'option_enable_motion_correction',
+      'option_auto_exposure_priority',
+      'option_color_scheme',
+      'option_histogram_equalization_enabled',
+      'option_min_distance',
+      'option_max_distance',
+      'option_texture_source',
+      'option_filter_magnitude',
+      'option_filter_smooth_alpha',
+      'option_filter_smooth_delta',
+      'option_holes_fill',
+      'option_stereo_baseline',
+    ];
+    numberAttrs.forEach((attr) => {
+      assert.equal(typeof obj[attr], 'number');
+    });
+    strAttrs.forEach((attr) => {
+      assert.equal(typeof obj[attr], 'string');
+    });
+    for (let i = 0; i < obj.OPTION_COUNT; i++) {
+      assert.equal(typeof obj.optionToString(i), 'string');
+    }
+    let ctx = new rs2.Context();
+    let sensors = ctx.querySensors();
+    // make sure it would not crash
+    sensors.forEach((s) => {
+      for (let i = 0; i < obj.OPTION_COUNT; i++) {
+        let old = s.getOption(i);
+        s.setOption(i, 10);
+        if (typeof old === 'number') {
+          s.setOption(i, old);
+        }
+      }
+    });
+    rs2.cleanup();
   });
 });
 
@@ -404,5 +529,93 @@ describe('ROI test', function() {
       }
     });
     rs2.cleanup();
+  });
+});
+
+describe('new record/playback test', function() {
+  let pipe;
+  let cfg;
+  let device;
+  const file = 'record.bag';
+
+  it('record and playback', () => {
+    // record
+    pipe = new rs2.Pipeline();
+    cfg = new rs2.Config();
+    cfg.enableRecordToFile(file);
+    pipe.start(cfg);
+    device = pipe.getActiveProfile().getDevice();
+
+    // make sure it's not a playback device
+    let playback = rs2.PlaybackDevice.from(device);
+    assert.equal(playback, undefined);
+
+    let recorder = rs2.RecorderDevice.from(device);
+    assert.equal(recorder instanceof rs2.RecorderDevice, true);
+    pipe.waitForFrames();
+    pipe.waitForFrames();
+    pipe.waitForFrames();
+    pipe.stop();
+    // make sure the recorded frames are flushed to file
+    rs2.cleanup();
+
+    assert.equal(fs.existsSync(file), true);
+
+    // playback
+    cfg = new rs2.Config();
+    cfg.enableDeviceFromFile(file);
+    pipe = new rs2.Pipeline();
+    pipe.start(cfg);
+    device = pipe.getActiveProfile().getDevice();
+    playback = rs2.PlaybackDevice.from(device);
+    assert.equal(playback instanceof rs2.PlaybackDevice, true);
+
+    // make sure it's not a RecorderDevice
+    recorder = rs2.RecorderDevice.from(device);
+    assert.equal(recorder, undefined);
+
+    let frames = pipe.waitForFrames();
+    assert.equal(frames instanceof rs2.FrameSet, true);
+    pipe.stop();
+    rs2.cleanup();
+    fs.unlinkSync(file);
+  }).timeout(5000);
+});
+
+describe('frameset misc test', function() {
+  it('get any frame twice test', () => {
+    let pipe = new rs2.Pipeline();
+    pipe.start();
+    let frames = pipe.waitForFrames();
+    let frame = frames.getFrame(rs2.stream.STREAM_ANY);
+    assert.equal(frame instanceof rs2.Frame, true);
+    frame = frames.getFrame(rs2.stream.STREAM_ANY);
+    assert.equal(frame instanceof rs2.Frame, true);
+    pipe.stop();
+    rs2.cleanup();
+  });
+});
+
+describe('post processing filter tests', function() {
+  let ctx;
+  let pipe;
+  before(function() {
+    ctx = new rs2.Context();
+    pipe = new rs2.Pipeline(ctx);
+  });
+
+  after(function() {
+    rs2.cleanup();
+  });
+
+  it('hole-filling filter test', () => {
+    pipe.start();
+    const frames = pipe.waitForFrames();
+    assert.equal(frames.size > 0, true);
+    let filter = new rs2.HoleFillingFilter();
+    let out = filter.process(frames.depthFrame);
+    assert.equal(out instanceof rs2.Frame, true);
+    assert.equal(out.isValid, true);
+    pipe.stop();
   });
 });

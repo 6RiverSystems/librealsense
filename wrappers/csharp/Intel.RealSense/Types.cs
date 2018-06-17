@@ -3,8 +3,12 @@ using System.Runtime.InteropServices;
 
 namespace Intel.RealSense
 {
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void frame_callback(IntPtr frame, IntPtr user_data);
     //public delegate void frame_callback([Out, MarshalAs(UnmanagedType.CustomMarshaler, MarshalTypeRef = typeof(FrameMarshaler))] out Frame frame, IntPtr user_data);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void frame_processor_callback(IntPtr frame, IntPtr user, IntPtr user_data);
 
     public enum NotificationCategory
     {
@@ -70,12 +74,14 @@ namespace Intel.RealSense
     {
         Name = 0,
         SerialNumber = 1,
-        FirmwareVersion = 2,
-        PhysicalPort = 3,
-        DebugOpCode = 4,
-        AdvancedMode = 5,
-        ProductId = 6,
-        CameraLocked = 7,
+        RecommendedFirmwareVersion = 2,
+        FirmwareVersion = 3,
+        PhysicalPort = 4,
+        DebugOpCode = 5,
+        AdvancedMode = 6,
+        ProductId = 7,
+        CameraLocked = 8,
+        UsbTypeDescriptor = 9,
     }
 
     public enum Stream
