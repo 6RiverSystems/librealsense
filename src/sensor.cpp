@@ -209,7 +209,7 @@ namespace librealsense
                     auto it = results.find(mapping);
                     if (it != results.end())
                     {
-                        it->original_requests.push_back(r);
+                        it->original_requests.push_back(map_requests(r));
                     }
 
                     return true;
@@ -221,6 +221,21 @@ namespace librealsense
         if (requests.empty()) return{ begin(results), end(results) };
 
         throw invalid_value_exception("Subdevice unable to satisfy stream requests!");
+    }
+
+    std::shared_ptr<stream_profile_interface> sensor_base::map_requests(std::shared_ptr<stream_profile_interface> request)
+    {
+        stream_profiles results;
+        auto profiles = get_stream_profiles();
+
+        auto it = std::find_if(profiles.begin(), profiles.end(), [&](std::shared_ptr<stream_profile_interface> p) {
+            return to_profile(p.get()) == to_profile(request.get());
+        });
+
+        if (it == profiles.end())
+            throw invalid_value_exception("Subdevice could not map requests!");
+
+        return *it;
     }
 
     uvc_sensor::~uvc_sensor()
@@ -237,18 +252,6 @@ namespace librealsense
         {
             LOG_ERROR("An error has occurred while stop_streaming()!");
         }
-    }
-
-    region_of_interest_method& uvc_sensor::get_roi_method() const
-    {
-        if (!_roi_method.get())
-            throw librealsense::not_implemented_exception("Region-of-interest is not implemented for this device!");
-        return *_roi_method;
-    }
-
-    void uvc_sensor::set_roi_method(std::shared_ptr<region_of_interest_method> roi_method)
-    {
-        _roi_method = roi_method;
     }
 
     stream_profiles uvc_sensor::init_stream_profiles()
@@ -323,8 +326,10 @@ namespace librealsense
             auto a = to_profile(ap.get());
             auto b = to_profile(bp.get());
 
-            auto at = std::make_tuple(a.stream, a.width, a.height, a.fps, a.format);
-            auto bt = std::make_tuple(b.stream, b.width, b.height, b.fps, b.format);
+            // stream == RS2_STREAM_COLOR && format == RS2_FORMAT_RGB8 element works around the fact that Y16 gets priority over RGB8 when both
+            // are available for pipeline stream resolution
+            auto at = std::make_tuple(a.stream, a.width, a.height, a.fps, a.stream == RS2_STREAM_COLOR && a.format == RS2_FORMAT_RGB8, a.format);
+            auto bt = std::make_tuple(b.stream, b.width, b.height, b.fps, b.stream == RS2_STREAM_COLOR && b.format == RS2_FORMAT_RGB8, b.format);
 
             return at > bt;
         });
@@ -532,6 +537,7 @@ namespace librealsense
                 catch (...) {}
             }
             reset_streaming();
+            _power.reset();
             _is_opened = false;
             throw;
         }
