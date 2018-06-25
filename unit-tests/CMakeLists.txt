@@ -23,7 +23,7 @@ else()
     message(STATUS "The compiler ${CMAKE_CXX_COMPILER} has no C++11 support. Please use a different C++ compiler.")
 endif()
 
-set(DEPENDENCIES realsense gpu_kernel_library ${catkin_LIBRARIES})
+set(DEPENDENCIES realsense ${catkin_LIBRARIES})
 if(WIN32)
 else()
     list(APPEND DEPENDENCIES m ${LIBUSB1_LIBRARIES})

@@ -1,11 +1,6 @@
-# ubuntu 12.04 LTS cmake version 2.8.7
-# ubuntu 14.04 LTS cmake version 2.8.12.2
 # ubuntu 16.04 LTS cmake version 3.5.1
 cmake_minimum_required(VERSION 3.5.1)
 project(librealsense)
-
-include(FindCUDA)
-set(CUDA_USE_STATIC_CUDA_RUNTIME OFF CACHE INTERNAL "" FORCE)
 
 macro(info msg)
     message(STATUS "Info: ${msg}")
@@ -64,22 +59,9 @@ IF (${ROS_BUILD_TYPE})
   # DEPENDS: system dependencies of this project that dependent projects also need
   catkin_package(
           INCLUDE_DIRS include
-          LIBRARIES realsense gpu_kernel_library
+          LIBRARIES realsense
   )
 ENDIF()
-
-if(CUDA_FOUND)
-    MESSAGE(STATUS "CUDA libraries found. Compiling with CUDA support enabled.")
-    CUDA_INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/include/librealsense/gpu ${CMAKE_CURRENT_SOURCE_DIR}/include/librealsense)
-    set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS} -std=c++11 -DHAVE_CUDA -default-stream=per-thread -cudart=shared)
-    CUDA_ADD_LIBRARY(gpu_kernel_library src/gpu/align_z_to_other.cu SHARED)
-else()
-    MESSAGE(STATUS "CUDA libraries not found. Compiling without CUDA support enabled.")
-    ADD_LIBRARY(gpu_kernel_library SHARED src/gpu/align_z_to_other_stub.cpp )
-    target_include_directories(gpu_kernel_library PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include/librealsense/gpu ${CMAKE_CURRENT_SOURCE_DIR}/include/librealsense)
-    set_target_properties(gpu_kernel_library PROPERTIES LINKER_LANGUAGE CXX)
-    set(CUDA_LIBRARIES "")
-endif()
 
 # Save the command line compile commands in the build output
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
@@ -96,11 +78,6 @@ elseif(COMPILER_SUPPORTS_CXX0X)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
 else()
     message(STATUS "The compiler ${CMAKE_CXX_COMPILER} has no C++11 support. Please use a different C++ compiler.")
-endif()
-
-if (CUDA_FOUND)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DHAVE_CUDA")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAVE_CUDA")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/CMake)
@@ -226,9 +203,9 @@ if(BUILD_SHARED_LIBS)
     add_library(realsense SHARED ${REALSENSE_CPP} ${REALSENSE_HPP} ${REALSENSE_DEF})
     set_target_properties(realsense PROPERTIES VERSION ${REALSENSE_VERSION_STRING}
                                     SOVERSION ${REALSENSE_VERSION_MAJOR})
-    target_link_libraries(realsense ${LIBUSB1_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${gpu_kernel_library} ${CUDA_LIBRARIES} ${CATKIN_LIBRARIES} )
+    target_link_libraries(realsense ${LIBUSB1_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${CATKIN_LIBRARIES} )
 else()
-    add_library(realsense STATIC ${REALSENSE_CPP} ${REALSENSE_HPP} ${gpu_kernel_library} ${CUDA_LIBRARIES} ${CATKIN_LIBRARIES})
+    add_library(realsense STATIC ${REALSENSE_CPP} ${REALSENSE_HPP} ${CATKIN_LIBRARIES})
 endif()
 
 target_include_directories(realsense PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -244,12 +221,6 @@ if(${ROS_BUILD_TYPE})
 
     install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}/
         DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION})
-
-    install(TARGETS gpu_kernel_library
-            RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-            LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-            ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-            )
 else()
     set(CMAKECONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/realsense")
 
@@ -259,13 +230,6 @@ else()
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
-
-    install(TARGETS gpu_kernel_library
-            EXPORT realsenseTargets
-            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            )
 
     install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/librealsense DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
