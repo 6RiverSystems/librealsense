@@ -882,7 +882,7 @@ namespace librealsense
             {
                 LOG_WARNING("Frames didn't arrived within 5 seconds");
                 librealsense::notification n = {RS2_NOTIFICATION_CATEGORY_FRAMES_TIMEOUT, 0, RS2_LOG_SEVERITY_WARN,  "Frames didn't arrived within 5 seconds"};
-
+                //exit(1);
                 _error_handler(n);
             }
         }

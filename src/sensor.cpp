@@ -11,6 +11,8 @@
 #include "device.h"
 #include "stream.h"
 #include "sensor.h"
+#include <chrono>
+#include <thread>
 
 namespace librealsense
 {
@@ -519,6 +521,13 @@ namespace librealsense
         try {
             _device->stream_on([&](const notification& n)
             {
+                if (n.category == RS2_NOTIFICATION_CATEGORY_FRAMES_TIMEOUT) {
+                    _owner->hardware_reset();
+                    std::chrono::seconds delay(2);
+                    std::this_thread::sleep_for(delay);
+                    LOG_WARNING("v4l_uvc_device: Frames did not arrive within 5 seconds!");
+                    exit(1);
+                }
                 _notifications_processor->raise_notification(n);
             });
         }
