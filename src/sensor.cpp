@@ -524,6 +524,8 @@ namespace librealsense
                 //if (n.category == RS2_NOTIFICATION_CATEGORY_FRAMES_TIMEOUT) {
 
                 //}
+                LOG_WARNING("notification received. exiting.");
+                exit(1);
                 _notifications_processor->raise_notification(n);
             });
         }
