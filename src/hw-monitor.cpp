@@ -1,271 +1,183 @@
 // License: Apache 2.0. See LICENSE file in root directory.
 // Copyright(c) 2015 Intel Corporation. All Rights Reserved.
-
-
 #include "hw-monitor.h"
+#include "types.h"
+#include <iomanip>
 
-namespace rsimpl
+namespace librealsense
 {
-    namespace hw_monitor
+
+    void hw_monitor::fill_usb_buffer(int opCodeNumber, int p1, int p2, int p3, int p4,
+        uint8_t* data, int dataLength, uint8_t* bufferToSend, int& length)
     {
+        auto preHeaderData = IVCAM_MONITOR_MAGIC_NUMBER;
 
-        void fill_usb_buffer(int opCodeNumber, int p1, int p2, int p3, int p4, uint8_t * data, int dataLength, uint8_t * bufferToSend, int & length)
+        auto writePtr = bufferToSend;
+        auto header_size = 4;
+
+        auto cur_index = 2;
+        *(reinterpret_cast<uint16_t *>(writePtr + cur_index)) = preHeaderData;
+        cur_index += sizeof(uint16_t);
+        *(reinterpret_cast<uint32_t *>(writePtr + cur_index)) = opCodeNumber;
+        cur_index += sizeof(uint32_t);
+        *(reinterpret_cast<uint32_t *>(writePtr + cur_index)) = p1;
+        cur_index += sizeof(uint32_t);
+        *(reinterpret_cast<uint32_t *>(writePtr + cur_index)) = p2;
+        cur_index += sizeof(uint32_t);
+        *(reinterpret_cast<uint32_t *>(writePtr + cur_index)) = p3;
+        cur_index += sizeof(uint32_t);
+        *(reinterpret_cast<uint32_t *>(writePtr + cur_index)) = p4;
+        cur_index += sizeof(uint32_t);
+
+        if (dataLength)
         {
-            uint16_t preHeaderData = IVCAM_MONITOR_MAGIC_NUMBER;
-
-            uint8_t * writePtr = bufferToSend;
-            int header_size = 4;
-
-            int cur_index = 2;
-            *(uint16_t *)(writePtr + cur_index) = preHeaderData;
-            cur_index += sizeof(uint16_t);
-            *(int *)(writePtr + cur_index) = opCodeNumber;
-            cur_index += sizeof(uint32_t);
-            *(int *)(writePtr + cur_index) = p1;
-            cur_index += sizeof(uint32_t);
-            *(int *)(writePtr + cur_index) = p2;
-            cur_index += sizeof(uint32_t);
-            *(int *)(writePtr + cur_index) = p3;
-            cur_index += sizeof(uint32_t);
-            *(int *)(writePtr + cur_index) = p4;
-            cur_index += sizeof(uint32_t);
-
-            if (dataLength)
-            {
-                memcpy(writePtr + cur_index, data, dataLength);
-                cur_index += dataLength;
-            }
-
-            length = cur_index;
-            *(uint16_t *)bufferToSend = (uint16_t)(length - header_size); // Length doesn't include header
+            librealsense::copy(writePtr + cur_index, data, dataLength);
+            cur_index += dataLength;
         }
 
+        length = cur_index;
+        *(reinterpret_cast<uint16_t *>(bufferToSend)) = static_cast<uint16_t>(length - header_size); // Length doesn't include header
+    }
 
-        void execute_usb_command(uvc::device & device, std::timed_mutex & mutex, uint8_t *out, size_t outSize, uint32_t & op, uint8_t * in, size_t & inSize)
+
+    void hw_monitor::execute_usb_command(uint8_t *out, size_t outSize, uint32_t & op, uint8_t * in, size_t & inSize) const
+    {
+        std::vector<uint8_t> out_vec(out, out + outSize);
+        auto res = _locked_transfer->send_receive(out_vec);
+
+        // read
+        if (in && inSize)
         {
-            // write
-            errno = 0;
+            if (res.size() < static_cast<int>(sizeof(uint32_t)))
+                throw invalid_value_exception("Incomplete bulk usb transfer!");
 
-            int outXfer;
+            if (res.size() > IVCAM_MONITOR_MAX_BUFFER_SIZE)
+                throw invalid_value_exception("Out buffer is greater than max buffer size!");
 
-            if (!mutex.try_lock_for(std::chrono::milliseconds(IVCAM_MONITOR_MUTEX_TIMEOUT))) throw std::runtime_error("timed_mutex::try_lock_for(...) timed out");
-            std::lock_guard<std::timed_mutex> guard(mutex, std::adopt_lock);
+            op = *reinterpret_cast<uint32_t *>(res.data());
+            if (res.size() > static_cast<int>(inSize))
+                throw invalid_value_exception("bulk transfer failed - user buffer too small");
 
-            bulk_transfer(device, IVCAM_MONITOR_ENDPOINT_OUT, out, (int)outSize, &outXfer, 1000); // timeout in ms
+            inSize = res.size();
+            librealsense::copy(in, res.data(), inSize);
+        }
+    }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            // read
-            if (in && inSize)
-            {
-                uint8_t buf[IVCAM_MONITOR_MAX_BUFFER_SIZE];
+    void hw_monitor::update_cmd_details(hwmon_cmd_details& details, size_t receivedCmdLen, unsigned char* outputBuffer)
+    {
+        details.receivedCommandDataLength = receivedCmdLen;
 
-                errno = 0;
+        if (details.oneDirection) return;
 
-                bulk_transfer(device, IVCAM_MONITOR_ENDPOINT_IN, buf, sizeof(buf), &outXfer, 1000);
-                if (outXfer < (int)sizeof(uint32_t)) throw std::runtime_error("incomplete bulk usb transfer");
+        if (details.receivedCommandDataLength < 4)
+            throw invalid_value_exception("received incomplete response to usb command");
 
-                op = *(uint32_t *)buf;
-                if (outXfer > (int)inSize) throw std::runtime_error("bulk transfer failed - user buffer too small");
-                inSize = outXfer;
-                memcpy(in, buf, inSize);
-            }
+        details.receivedCommandDataLength -= 4;
+        librealsense::copy(details.receivedOpcode.data(), outputBuffer, 4);
+
+        if (details.receivedCommandDataLength > 0)
+            librealsense::copy(details.receivedCommandData.data(), outputBuffer + 4, details.receivedCommandDataLength);
+    }
+
+    void hw_monitor::send_hw_monitor_command(hwmon_cmd_details& details) const
+    {
+        unsigned char outputBuffer[HW_MONITOR_BUFFER_SIZE];
+
+        uint32_t op{};
+        size_t receivedCmdLen = HW_MONITOR_BUFFER_SIZE;
+
+        execute_usb_command(details.sendCommandData.data(), details.sizeOfSendCommandData, op, outputBuffer, receivedCmdLen);
+        update_cmd_details(details, receivedCmdLen, outputBuffer);
+    }
+
+    std::vector<uint8_t> hw_monitor::send(std::vector<uint8_t> data) const
+    {
+        return _locked_transfer->send_receive(data);
+    }
+
+    std::vector<uint8_t> hw_monitor::send(command cmd) const
+    {
+        hwmon_cmd newCommand(cmd);
+        auto opCodeXmit = static_cast<uint32_t>(newCommand.cmd);
+
+        hwmon_cmd_details details;
+        details.oneDirection = newCommand.oneDirection;
+        details.timeOut = newCommand.timeOut;
+
+        fill_usb_buffer(opCodeXmit,
+            newCommand.param1,
+            newCommand.param2,
+            newCommand.param3,
+            newCommand.param4,
+            newCommand.data,
+            newCommand.sizeOfSendCommandData,
+            details.sendCommandData.data(),
+            details.sizeOfSendCommandData);
+
+        send_hw_monitor_command(details);
+
+        // Error/exit conditions
+        if (newCommand.oneDirection)
+            return std::vector<uint8_t>();
+
+        librealsense::copy(newCommand.receivedOpcode, details.receivedOpcode.data(), 4);
+        librealsense::copy(newCommand.receivedCommandData, details.receivedCommandData.data(), details.receivedCommandDataLength);
+        newCommand.receivedCommandDataLength = details.receivedCommandDataLength;
+
+        // endian?
+        auto opCodeAsUint32 = pack(details.receivedOpcode[3], details.receivedOpcode[2],
+                                   details.receivedOpcode[1], details.receivedOpcode[0]);
+        if (opCodeAsUint32 != opCodeXmit)
+        {
+            throw invalid_value_exception(to_string() << "OpCodes do not match! Sent "
+                << opCodeXmit << " but received " << static_cast<int>(opCodeAsUint32) << "!");
         }
 
-        void send_hw_monitor_command(uvc::device & device, std::timed_mutex & mutex, hwmon_cmd_details & details)
-        {
-            unsigned char outputBuffer[HW_MONITOR_BUFFER_SIZE];
+        return std::vector<uint8_t>(newCommand.receivedCommandData,
+            newCommand.receivedCommandData + newCommand.receivedCommandDataLength);
+    }
 
-            uint32_t op;
-            size_t receivedCmdLen = HW_MONITOR_BUFFER_SIZE;
+    void hw_monitor::get_gvd(size_t sz, unsigned char* gvd, uint8_t gvd_cmd) const
+    {
+        command command(gvd_cmd);
+        auto data = send(command);
+        auto minSize = std::min(sz, data.size());
+        librealsense::copy(gvd, data.data(), minSize);
+    }
 
-            execute_usb_command(device, mutex, (uint8_t*)details.sendCommandData, (size_t)details.sizeOfSendCommandData, op, outputBuffer, receivedCmdLen);
-            details.receivedCommandDataLength = receivedCmdLen;
+    std::string hw_monitor::get_firmware_version_string(int gvd_cmd, uint32_t offset) const
+    {
+        std::vector<unsigned char> gvd(HW_MONITOR_BUFFER_SIZE);
+        get_gvd(gvd.size(), gvd.data(), gvd_cmd);
+        uint8_t fws[8];
+        librealsense::copy(fws, gvd.data() + offset, 8);
+        return to_string() << static_cast<int>(fws[3]) << "." << static_cast<int>(fws[2])
+            << "." << static_cast<int>(fws[1]) << "." << static_cast<int>(fws[0]);
+    }
 
-            if (details.oneDirection) return;
+    std::string hw_monitor::get_module_serial_string(uint8_t gvd_cmd, uint32_t offset) const
+    {
+        std::vector<unsigned char> gvd(HW_MONITOR_BUFFER_SIZE);
+        get_gvd(gvd.size(), gvd.data(), gvd_cmd);
+        unsigned char ss[8];
+        librealsense::copy(ss, gvd.data() + offset, 8);
+        std::stringstream formattedBuffer;
+        formattedBuffer << std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(ss[0]) <<
+            std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(ss[1]) <<
+            std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(ss[2]) <<
+            std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(ss[3]) <<
+            std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(ss[4]) <<
+            std::setfill('0') << std::setw(2) << std::hex << static_cast<int>(ss[5]);
 
-            if (details.receivedCommandDataLength < 4) throw std::runtime_error("received incomplete response to usb command");
+        return formattedBuffer.str();
+    }
 
-            details.receivedCommandDataLength -= 4;
-            memcpy(details.receivedOpcode, outputBuffer, 4);
-
-            if (details.receivedCommandDataLength > 0)
-                memcpy(details.receivedCommandData, outputBuffer + 4, details.receivedCommandDataLength);
-        }
-
-        void perform_and_send_monitor_command(uvc::device & device, std::timed_mutex & mutex, hwmon_cmd & newCommand)
-        {
-            uint32_t opCodeXmit = (uint32_t)newCommand.cmd;
-
-            hwmon_cmd_details details;
-            details.oneDirection = newCommand.oneDirection;
-            details.TimeOut = newCommand.TimeOut;
-
-            fill_usb_buffer(opCodeXmit,
-                newCommand.Param1,
-                newCommand.Param2,
-                newCommand.Param3,
-                newCommand.Param4,
-                newCommand.data,
-                newCommand.sizeOfSendCommandData,
-                details.sendCommandData,
-                details.sizeOfSendCommandData);
-
-            send_hw_monitor_command(device, mutex, details);
-
-            // Error/exit conditions
-            if (newCommand.oneDirection)
-                return;
-
-            memcpy(newCommand.receivedOpcode, details.receivedOpcode, 4);
-            memcpy(newCommand.receivedCommandData, details.receivedCommandData, details.receivedCommandDataLength);
-            newCommand.receivedCommandDataLength = details.receivedCommandDataLength;
-
-            // endian?
-            uint32_t opCodeAsUint32 = pack(details.receivedOpcode[3], details.receivedOpcode[2], details.receivedOpcode[1], details.receivedOpcode[0]);
-            if (opCodeAsUint32 != opCodeXmit)
-            {
-                throw std::runtime_error("opcodes do not match");
-            }
-        }
-
-        void perform_and_send_monitor_command(uvc::device & device, std::timed_mutex & mutex, unsigned char /*handle_id*/, hwmon_cmd & newCommand)
-        {
-            uint32_t opCodeXmit = (uint32_t)newCommand.cmd;
-
-            hwmon_cmd_details details;
-            details.oneDirection = newCommand.oneDirection;
-            details.TimeOut = newCommand.TimeOut;
-
-            fill_usb_buffer(opCodeXmit,
-                newCommand.Param1,
-                newCommand.Param2,
-                newCommand.Param3,
-                newCommand.Param4,
-                newCommand.data,
-                newCommand.sizeOfSendCommandData,
-                details.sendCommandData,
-                details.sizeOfSendCommandData);
-
-            send_hw_monitor_command(device, mutex, details);
-
-            // Error/exit conditions
-            if (newCommand.oneDirection)
-                return;
-
-            memcpy(newCommand.receivedOpcode, details.receivedOpcode, 4);
-            memcpy(newCommand.receivedCommandData, details.receivedCommandData, details.receivedCommandDataLength);
-            newCommand.receivedCommandDataLength = details.receivedCommandDataLength;
-
-            // endian?
-            uint32_t opCodeAsUint32 = pack(details.receivedOpcode[3], details.receivedOpcode[2], details.receivedOpcode[1], details.receivedOpcode[0]);
-            if (opCodeAsUint32 != opCodeXmit)
-            {
-                throw std::runtime_error("opcodes do not match");
-            }
-        }
-        void i2c_write_reg(int command, uvc::device & device, uint16_t slave_address, uint16_t reg, uint32_t value)
-        {
-            hw_monitor::hwmon_cmd cmd(command);
-
-            cmd.Param1 = slave_address;
-            cmd.Param2 = reg;
-            cmd.Param3 = sizeof(value);
-
-            memcpy(cmd.data, &value, sizeof(value));
-            cmd.sizeOfSendCommandData = sizeof(value);
-
-            std::timed_mutex mutex;
-            perform_and_send_monitor_command(device, mutex, cmd);
-
-            return;
-        }
-
-        // Read a 32 bit value from the i2c register.
-        void i2c_read_reg(int command, uvc::device & device, uint16_t slave_address, uint16_t reg, uint32_t size, byte* data)
-        {
-            hw_monitor::hwmon_cmd cmd(command);
-
-            cmd.Param1 = slave_address;
-            cmd.Param2 = reg;
-            cmd.Param3 = size;
-            const int num_retries = 10;
-            std::timed_mutex mutex;
-            int retries = 0;
-            do {
-                try {
-                    hw_monitor::perform_and_send_monitor_command(device, mutex, cmd);
-
-                    // validate that the size is of 32 bit (value size).
-                    if (cmd.receivedCommandDataLength == size)
-                    {
-                        memcpy(data, cmd.receivedCommandData, cmd.receivedCommandDataLength);
-                        break;
-                    }
-                }
-                catch (...)
-                {
-                    retries++;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    if (retries == num_retries)
-                    {
-                        throw;
-                    }
-                }
-
-            } while (retries < num_retries);
-            return;
-        }
-
-        void check_eeprom_read_write_status(int IRB_opcode, uvc::device & device)
-        {
-            uint32_t value = 0;
-            i2c_read_reg(IRB_opcode, device, 0x42, 0x70, sizeof(uint32_t), (byte*)&value);
-            if (value & 0x100)
-            {
-                throw std::runtime_error(to_string() << "EEPRom Error" << value);
-            }
-        }
-
-
-        void read_from_eeprom(int IRB_opcode, int IWB_opcode, uvc::device & device, unsigned int offset, int size, byte* data)
-        {
-            unsigned int  command = offset;
-
-            //bits[0:12] - Offset In EEprom
-            command &= 0x00001FFF;
-
-            //bit[13] - Direction 0 = read, 1 = write
-            //Doesn't do anything since it is already 0. Just for redability/consistency.
-            command &= 0xFFFFDFFF;
-
-            //bit[14:15] - Reserved
-            //Nothing to do
-
-            //bits[16:23] - Size to read
-            unsigned int  lengthR = size;
-            lengthR = lengthR << 16;
-
-            command |= lengthR;
-
-            //bit[14:15] - Reserved
-            //Nothing to do
-
-            //expected = 0x100005
-
-            uint32_t value = 0;
-            i2c_read_reg(IRB_opcode, device, 0x42, 0x70, sizeof(uint32_t), (byte*)&value); //clean the register
-            i2c_write_reg(IWB_opcode, device, 0x42, 0x0C, command);
-            check_eeprom_read_write_status(IRB_opcode, device);
-            i2c_read_reg(IRB_opcode, device, 0x42, 0xD0, size, data);
-            
-        }
-        void get_raw_data(uint8_t opcode, uvc::device & device, std::timed_mutex & mutex, uint8_t * data, size_t & bytesReturned)
-        {
-            hw_monitor::hwmon_cmd command(opcode);
-
-            perform_and_send_monitor_command(device, mutex, command);
-            memcpy(data, command.receivedCommandData, HW_MONITOR_BUFFER_SIZE);
-            bytesReturned = command.receivedCommandDataLength;
-        }
+    bool hw_monitor::is_camera_locked(uint8_t gvd_cmd, uint32_t offset) const
+    {
+        std::vector<unsigned char> gvd(HW_MONITOR_BUFFER_SIZE);
+        get_gvd(gvd.size(), gvd.data(), gvd_cmd);
+        bool value;
+        librealsense::copy(&value, gvd.data() + offset, 1);
+        return value;
     }
 }

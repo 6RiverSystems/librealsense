@@ -1,161 +1,370 @@
-
+#include "metadata-parser.h"
 #include "archive.h"
-#include <algorithm>
+#include <fstream>
 
-using namespace rsimpl;
+#define MIN_DISTANCE 1e-6
 
-frame_archive::frame_archive(const std::vector<subdevice_mode_selection>& selection, std::atomic<uint32_t>* in_max_frame_queue_size, std::chrono::high_resolution_clock::time_point capture_started)
-    : max_frame_queue_size(in_max_frame_queue_size), mutex(), capture_started(capture_started)
+namespace librealsense
 {
-    // Store the mode selection that pertains to each native stream
-    for (auto & mode : selection)
+    std::shared_ptr<sensor_interface> frame::get_sensor() const
     {
-        for (auto & o : mode.get_outputs())
+        auto res = sensor.lock();
+        if (!res)
         {
-            modes[o.first] = mode;
+            auto archive = get_owner();
+            if (archive) return archive->get_sensor();
+        }
+        return res;
+    }
+    void frame::set_sensor(std::shared_ptr<sensor_interface> s) { sensor = s;}
+
+    float3* points::get_vertices()
+    {
+        auto xyz = (float3*)data.data();
+        return xyz;
+    }
+
+    std::tuple<uint8_t, uint8_t, uint8_t> get_texcolor(const frame_holder& texture, float u, float v)
+    {
+        auto ptr = dynamic_cast<video_frame*>(texture.frame);
+        if (ptr == nullptr) {
+            throw librealsense::invalid_value_exception("frame must be video frame");
+        }
+        const int w = ptr->get_width(), h = ptr->get_height();
+        int x = std::min(std::max(int(u*w + .5f), 0), w - 1);
+        int y = std::min(std::max(int(v*h + .5f), 0), h - 1);
+        int idx = x * ptr->get_bpp() / 8 + y * ptr->get_stride();
+        const auto texture_data = reinterpret_cast<const uint8_t*>(ptr->get_frame_data());
+        return std::make_tuple(texture_data[idx], texture_data[idx + 1], texture_data[idx + 2]);
+    }
+
+    void points::export_to_ply(const std::string& fname, const frame_holder& texture)
+    {
+        const auto vertices = get_vertices();
+        const auto texcoords = get_texture_coordinates();
+        std::vector<float3> new_vertices;
+        std::vector<std::tuple<uint8_t, uint8_t, uint8_t>> new_tex;
+        new_vertices.reserve(get_vertex_count());
+        new_tex.reserve(get_vertex_count());
+        assert(get_vertex_count());
+        for (size_t i = 0; i < get_vertex_count(); ++i)
+            if (fabs(vertices[i].x) >= MIN_DISTANCE || fabs(vertices[i].y) >= MIN_DISTANCE ||
+                fabs(vertices[i].z) >= MIN_DISTANCE)
+            {
+                new_vertices.push_back(vertices[i]);
+                if (texture)
+                {
+                    auto color = get_texcolor(texture, texcoords[i].x, texcoords[i].y);
+                    new_tex.push_back(color);
+                }
+            }
+
+        std::ofstream out(fname);
+        out << "ply\n";
+        out << "format binary_little_endian 1.0\n" /*"format ascii 1.0\n"*/;
+        out << "comment pointcloud saved from Realsense Viewer\n";
+        out << "element vertex " << new_vertices.size() << "\n";
+        out << "property float" << sizeof(float) * 8 << " x\n";
+        out << "property float" << sizeof(float) * 8 << " y\n";
+        out << "property float" << sizeof(float) * 8 << " z\n";
+        if (texture)
+        {
+            out << "property uchar red\n";
+            out << "property uchar green\n";
+            out << "property uchar blue\n";
+        }
+        out << "end_header\n";
+        out.close();
+
+        out.open(fname, std::ios_base::app | std::ios_base::binary);
+        for (int i = 0; i < new_vertices.size(); ++i)
+        {
+            // we assume little endian architecture on your device
+            out.write(reinterpret_cast<const char*>(&(new_vertices[i].x)), sizeof(float));
+            out.write(reinterpret_cast<const char*>(&(new_vertices[i].y)), sizeof(float));
+            out.write(reinterpret_cast<const char*>(&(new_vertices[i].z)), sizeof(float));
+
+            if (texture)
+            {
+                uint8_t x, y, z;
+                std::tie(x, y, z) = new_tex[i];
+                out.write(reinterpret_cast<const char*>(&x), sizeof(uint8_t));
+                out.write(reinterpret_cast<const char*>(&y), sizeof(uint8_t));
+                out.write(reinterpret_cast<const char*>(&z), sizeof(uint8_t));
+            }
         }
     }
 
-    for(auto s : {RS_STREAM_DEPTH, RS_STREAM_INFRARED, RS_STREAM_INFRARED2, RS_STREAM_COLOR, RS_STREAM_FISHEYE})
+    size_t points::get_vertex_count() const
     {
-        published_frames_per_stream[s] = 0;
+        return data.size() / (sizeof(float3) + sizeof(int2));
     }
-}
 
-frame_archive::frameset* frame_archive::clone_frameset(frameset* frameset)
-{
-    auto new_set = published_sets.allocate();
-    if (new_set)
+    float2* points::get_texture_coordinates()
     {
-        *new_set = *frameset;
+        auto xyz = (float3*)data.data();
+        auto ijs = (float2*)(xyz + get_vertex_count());
+        return ijs;
     }
-    return new_set;
-}
 
-void frame_archive::unpublish_frame(frame* frame)
-{
-    if (frame)
+    // Defines general frames storage model
+    template<class T>
+    class frame_archive : public std::enable_shared_from_this<frame_archive<T>>, public archive_interface
     {
-        log_frame_callback_end(frame);
-        std::lock_guard<std::recursive_mutex> lock(mutex);
+        std::atomic<uint32_t>* max_frame_queue_size;
+        std::atomic<uint32_t> published_frames_count;
+        small_heap<T, RS2_USER_QUEUE_SIZE> published_frames;
 
-        if (is_valid(frame->get_stream_type()))
-            --published_frames_per_stream[frame->get_stream_type()];
+        callbacks_heap callback_inflight;
 
-        freelist.push_back(std::move(*frame));
-        published_frames.deallocate(frame);
-       
-    }
-}
+        std::vector<T> freelist; // return frames here
+        std::atomic<bool> recycle_frames;
+        int pending_frames = 0;
+        std::recursive_mutex mutex;
+        std::shared_ptr<platform::time_service> _time_service;
+        std::shared_ptr<metadata_parser_map> _metadata_parsers = nullptr;
 
-frame_archive::frame* frame_archive::publish_frame(frame&& frame)
-{
-    if (is_valid(frame.get_stream_type()) &&
-        published_frames_per_stream[frame.get_stream_type()] >= *max_frame_queue_size)
-    {
-        return nullptr;
-    }
-    auto new_frame = published_frames.allocate();
-    if (new_frame)
-    {
-        if (is_valid(frame.get_stream_type())) ++published_frames_per_stream[frame.get_stream_type()];
-        *new_frame = std::move(frame);
-    }
-    return new_frame;
-}
+        std::weak_ptr<sensor_interface> _sensor;
+        std::shared_ptr<sensor_interface> get_sensor() const override { return _sensor.lock(); }
+        void set_sensor(std::shared_ptr<sensor_interface> s) override { _sensor = s; }
 
-frame_archive::frame_ref* frame_archive::detach_frame_ref(frameset* frameset, rs_stream stream)
-{
-    auto new_ref = detached_refs.allocate();
-    if (new_ref)
-    {
-        *new_ref = std::move(frameset->detach_ref(stream));
-    }
-    return new_ref;
-}
-
-frame_archive::frame_ref* frame_archive::clone_frame(frame_ref* frameset)
-{
-    auto new_ref = detached_refs.allocate();
-    if (new_ref)
-    {
-        *new_ref = *frameset;
-    }
-    return new_ref;
-}
-
-// Allocate a new frame in the backbuffer, potentially recycling a buffer from the freelist
-byte * frame_archive::alloc_frame(rs_stream stream, const frame_additional_data& additional_data, bool requires_memory)
-{
-    const size_t size = modes[stream].get_image_size(stream);
-    {
-        std::lock_guard<std::recursive_mutex> guard(mutex);
-
-        if (requires_memory)
+        T alloc_frame(const size_t size, const frame_additional_data& additional_data, bool requires_memory)
         {
-            // Attempt to obtain a buffer of the appropriate size from the freelist
-            for (auto it = begin(freelist); it != end(freelist); ++it)
+            T backbuffer;
+            //const size_t size = modes[stream].get_image_size(stream);
             {
-                if (it->data.size() == size)
+                std::lock_guard<std::recursive_mutex> guard(mutex);
+
+                if (requires_memory)
                 {
-                    backbuffer[stream] = std::move(*it);
-                    freelist.erase(it);
-                    break;
+                    // Attempt to obtain a buffer of the appropriate size from the freelist
+                    for (auto it = begin(freelist); it != end(freelist); ++it)
+                    {
+                        if (it->data.size() == size)
+                        {
+                            backbuffer = std::move(*it);
+                            freelist.erase(it);
+                            break;
+                        }
+                    }
+                }
+
+                // Discard buffers that have been in the freelist for longer than 1s
+                for (auto it = begin(freelist); it != end(freelist);)
+                {
+                    if (additional_data.timestamp > it->additional_data.timestamp + 1000) it = freelist.erase(it);
+                    else ++it;
+                }
+            }
+
+            if (requires_memory)
+            {
+                backbuffer.data.resize(size, 0); // TODO: Allow users to provide a custom allocator for frame buffers
+            }
+            backbuffer.additional_data = additional_data;
+            return backbuffer;
+        }
+
+        frame_interface* track_frame(T& f)
+        {
+            std::unique_lock<std::recursive_mutex> lock(mutex);
+
+            auto published_frame = f.publish(this->shared_from_this());
+            if (published_frame)
+            {
+                published_frame->acquire();
+                return published_frame;
+            }
+
+            LOG_DEBUG("publish(...) failed");
+            return nullptr;
+        }
+
+        void unpublish_frame(frame_interface* frame)
+        {
+            if (frame)
+            {
+                auto f = (T*)frame;
+                log_frame_callback_end(f);
+                std::unique_lock<std::recursive_mutex> lock(mutex);
+
+                frame->keep();
+
+                if (recycle_frames)
+                {
+                    freelist.push_back(std::move(*f));
+                }
+                lock.unlock();
+
+                if (f->is_fixed())
+                    published_frames.deallocate(f);
+                else
+                    delete f;
+            }
+        }
+
+        void keep_frame(frame_interface* frame)
+        {
+            --published_frames_count;
+        }
+
+        frame_interface* publish_frame(frame_interface* frame)
+        {
+            auto f = (T*)frame;
+
+            unsigned int max_frames = *max_frame_queue_size;
+
+            if (published_frames_count >= max_frames
+                && max_frames)
+            {
+                LOG_DEBUG("User didn't release frame resource.");
+                return nullptr;
+            }
+            auto new_frame = (max_frames ? published_frames.allocate() : new T());
+
+            if (new_frame)
+            {
+                if (max_frames) new_frame->mark_fixed();
+            }
+            else
+            {
+                new_frame = new T();
+            }
+
+            ++published_frames_count;
+            *new_frame = std::move(*f);
+
+            return new_frame;
+        }
+
+        void log_frame_callback_end(T* frame) const
+        {
+            if (frame && frame->get_stream())
+            {
+                auto callback_ended = _time_service?_time_service->get_time():0;
+                auto callback_warning_duration = 1000 / (frame->get_stream()->get_framerate() + 1);
+                auto callback_duration = callback_ended - frame->get_frame_callback_start_time_point();
+
+                LOG_DEBUG("CallbackFinished," << librealsense::get_string(frame->get_stream()->get_stream_type()) << "," << frame->get_frame_number()
+                    << ",DispatchedAt," << callback_ended);
+
+                if (callback_duration > callback_warning_duration)
+                {
+                    LOG_DEBUG("Frame Callback [" << librealsense::get_string(frame->get_stream()->get_stream_type())
+                             << "#" << std::dec << frame->additional_data.frame_number
+                             << "] overdue. (Duration: " << callback_duration
+                             << "ms, FPS: " << frame->get_stream()->get_framerate() << ", Max Duration: " << callback_warning_duration << "ms)");
                 }
             }
         }
 
-        // Discard buffers that have been in the freelist for longer than 1s
-        for (auto it = begin(freelist); it != end(freelist);)
+        std::shared_ptr<metadata_parser_map> get_md_parsers() const { return _metadata_parsers; };
+
+        friend class frame;
+
+    public:
+        explicit frame_archive(std::atomic<uint32_t>* in_max_frame_queue_size,
+                             std::shared_ptr<platform::time_service> ts,
+                             std::shared_ptr<metadata_parser_map> parsers)
+            : max_frame_queue_size(in_max_frame_queue_size),
+              mutex(), recycle_frames(true), _time_service(ts),
+              _metadata_parsers(parsers)
         {
-            if (additional_data.timestamp > it->additional_data.timestamp + 1000) it = freelist.erase(it);
-            else ++it;
+            published_frames_count = 0;
+        }
+
+        callback_invocation_holder begin_callback()
+        {
+            return { callback_inflight.allocate(), &callback_inflight };
+        }
+
+        void release_frame_ref(frame_interface* ref)
+        {
+            ref->release();
+        }
+
+        frame_interface* alloc_and_track(const size_t size, const frame_additional_data& additional_data, bool requires_memory)
+        {
+            auto frame = alloc_frame(size, additional_data, requires_memory);
+            return track_frame(frame);
+        }
+
+        void flush()
+        {
+            published_frames.stop_allocation();
+            callback_inflight.stop_allocation();
+            recycle_frames = false;
+
+            auto callbacks_inflight = callback_inflight.get_size();
+            if (callbacks_inflight > 0)
+            {
+                LOG_WARNING(callbacks_inflight << " callbacks are still running on some other threads. Waiting until all callbacks return...");
+            }
+            // wait until user is done with all the stuff he chose to borrow
+            callback_inflight.wait_until_empty();
+
+            {
+                std::lock_guard<std::recursive_mutex> guard(mutex);
+                freelist.clear();
+            }
+
+            pending_frames = published_frames.get_size();
+            if (pending_frames > 0)
+            {
+                LOG_WARNING("The user was holding on to "
+                    << std::dec << pending_frames << " frames after stream 0x"
+                    << std::hex << this << " stopped" << std::dec);
+            }
+            // frames and their frame refs are not flushed, by design
+        }
+
+        ~frame_archive()
+        {
+            if (pending_frames > 0)
+            {
+                LOG_WARNING("All frames from stream 0x"
+                    << std::hex << this << " are now released by the user");
+            }
+        }
+
+    };
+
+    std::shared_ptr<archive_interface> make_archive(rs2_extension type,
+                                                    std::atomic<uint32_t>* in_max_frame_queue_size,
+                                                    std::shared_ptr<platform::time_service> ts,
+                                                    std::shared_ptr<metadata_parser_map> parsers)
+    {
+        switch(type)
+        {
+        case RS2_EXTENSION_VIDEO_FRAME :
+            return std::make_shared<frame_archive<video_frame>>(in_max_frame_queue_size, ts, parsers);
+
+        case RS2_EXTENSION_COMPOSITE_FRAME :
+            return std::make_shared<frame_archive<composite_frame>>(in_max_frame_queue_size, ts, parsers);
+
+        case RS2_EXTENSION_MOTION_FRAME:
+            return std::make_shared<frame_archive<motion_frame>>(in_max_frame_queue_size, ts, parsers);
+
+        case RS2_EXTENSION_POINTS:
+            return std::make_shared<frame_archive<points>>(in_max_frame_queue_size, ts, parsers);
+
+        case RS2_EXTENSION_DEPTH_FRAME:
+            return std::make_shared<frame_archive<depth_frame>>(in_max_frame_queue_size, ts, parsers);
+
+        case RS2_EXTENSION_POSE_FRAME:
+            return std::make_shared<frame_archive<pose_frame>>(in_max_frame_queue_size, ts, parsers);
+
+        case RS2_EXTENSION_DISPARITY_FRAME:
+            return std::make_shared<frame_archive<disparity_frame>>(in_max_frame_queue_size, ts, parsers);
+
+        default:
+            throw std::runtime_error("Requested frame type is not supported!");
         }
     }
-    
-    if (requires_memory)
-    {
-        backbuffer[stream].data.resize(size); // TODO: Allow users to provide a custom allocator for frame buffers
-    }
-    backbuffer[stream].update_owner(this);
-    backbuffer[stream].additional_data = additional_data;
-    return backbuffer[stream].data.data();
 }
 
-void frame_archive::attach_continuation(rs_stream stream, frame_continuation&& continuation)
+void frame::release()
 {
-    backbuffer[stream].attach_continuation(std::move(continuation));
-}
-
-frame_archive::frame_ref* frame_archive::track_frame(rs_stream stream)
-{
-    std::unique_lock<std::recursive_mutex> lock(mutex);
-
-    auto published_frame = backbuffer[stream].publish();
-    if (published_frame)
-    {
-        frame_ref new_ref(published_frame); // allocate new frame_ref to ref-counter the now published frame
-        return clone_frame(&new_ref);
-    }
-
-    return nullptr;
-}
-
-void frame_archive::flush()
-{
-    published_frames.stop_allocation();
-    published_sets.stop_allocation();
-    detached_refs.stop_allocation();
-
-    // wait until user is done with all the stuff he chose to borrow
-    detached_refs.wait_until_empty();
-    published_frames.wait_until_empty();
-    published_sets.wait_until_empty();
-}
-
-void frame_archive::frame::release()
-{
-
     if (ref_count.fetch_sub(1) == 1)
     {
         on_release();
@@ -163,238 +372,114 @@ void frame_archive::frame::release()
     }
 }
 
-frame_archive::frame* frame_archive::frame::publish()
+void frame::keep()
 {
-    return owner->publish_frame(std::move(*this));
-}
-
-frame_archive::frame_ref frame_archive::frameset::detach_ref(rs_stream stream)
-{
-    return std::move(buffer[stream]);
-}
-
-void frame_archive::frameset::place_frame(rs_stream stream, frame&& new_frame)
-{
-    auto published_frame = new_frame.publish();
-    if (published_frame)
+    if (!_kept.exchange(true))
     {
-        frame_ref new_ref(published_frame); // allocate new frame_ref to ref-counter the now published frame
-        buffer[stream] = std::move(new_ref); // move the new handler in, release a ref count on previous frame
+        owner->keep_frame(this);
     }
 }
 
-
-void frame_archive::frameset::cleanup()
+frame_interface* frame::publish(std::shared_ptr<archive_interface> new_owner)
 {
-    for (auto i = 0; i < RS_STREAM_NATIVE_COUNT; i++)
-    {
-        buffer[i].disable_continuation();
-        buffer[i] = frame_ref(nullptr);
-    }
+    owner = new_owner;
+    _kept = false;
+    return owner->publish_frame(this);
 }
 
-double frame_archive::frame_ref::get_frame_metadata(rs_frame_metadata frame_metadata) const
+rs2_metadata_type frame::get_frame_metadata(const rs2_frame_metadata_value& frame_metadata) const
 {
-    return frame_ptr ? frame_ptr->get_frame_metadata(frame_metadata) : 0;
+    auto md_parsers = owner->get_md_parsers();
+
+    if (!md_parsers)
+        throw invalid_value_exception(to_string() << "metadata not available for "
+                                      << get_string(get_stream()->get_stream_type())<<" stream");
+
+    auto it = md_parsers.get()->find(frame_metadata);
+    if (it == md_parsers.get()->end())          // Possible user error - md attribute is not supported by this frame type
+        throw invalid_value_exception(to_string() << get_string(frame_metadata)
+                                      << " attribute is not applicable for "
+                                      << get_string(get_stream()->get_stream_type()) << " stream ");
+
+    // Proceed to parse and extract the required data attribute
+    return it->second->get(*this);
 }
 
-bool frame_archive::frame_ref::supports_frame_metadata(rs_frame_metadata frame_metadata) const
+bool frame::supports_frame_metadata(const rs2_frame_metadata_value& frame_metadata) const
 {
-    return frame_ptr ? frame_ptr->supports_frame_metadata(frame_metadata) : 0;
+    auto md_parsers = owner->get_md_parsers();
+
+    // verify preconditions
+    if (!md_parsers)
+        return false;                         // No parsers are available or no metadata was attached
+
+    auto it = md_parsers.get()->find(frame_metadata);
+    if (it == md_parsers.get()->end())          // Possible user error - md attribute is not supported by this frame type
+        return false;
+
+    return it->second->supports(*this);
 }
 
-const byte* frame_archive::frame_ref::get_frame_data() const
+const byte* frame::get_frame_data() const
 {
-    return frame_ptr ? frame_ptr->get_frame_data() : nullptr;
-}
-
-double frame_archive::frame_ref::get_frame_timestamp() const
-{
-    return frame_ptr ? frame_ptr->get_frame_timestamp(): 0;
-}
-
-unsigned long long frame_archive::frame_ref::get_frame_number() const
-{
-    return frame_ptr ? frame_ptr->get_frame_number() : 0;
-}
-
-long long frame_archive::frame_ref::get_frame_system_time() const
-{
-    return frame_ptr ? frame_ptr->get_frame_system_time() : 0;
-}
-
-rs_timestamp_domain frame_archive::frame_ref::get_frame_timestamp_domain() const
-{
-    return frame_ptr ? frame_ptr->get_frame_timestamp_domain() : RS_TIMESTAMP_DOMAIN_COUNT;
-}
-
-int frame_archive::frame_ref::get_frame_width() const
-{
-    return frame_ptr ? frame_ptr->get_width() : 0;
-}
-
-int frame_archive::frame_ref::get_frame_height() const
-{
-    return frame_ptr ? frame_ptr->get_height() : 0;
-}
-
-int frame_archive::frame_ref::get_frame_framerate() const
-{
-    return frame_ptr ? frame_ptr->get_framerate() : 0;
-}
-
-int frame_archive::frame_ref::get_frame_stride() const
-{
-    return frame_ptr ? frame_ptr->get_stride() : 0;
-}
-
-int frame_archive::frame_ref::get_frame_bpp() const
-{
-    return frame_ptr ? frame_ptr->get_bpp() : 0;
-}
-
-rs_format frame_archive::frame_ref::get_frame_format() const
-{
-    return frame_ptr ? frame_ptr->get_format() : RS_FORMAT_COUNT;
-}
-
-rs_stream frame_archive::frame_ref::get_stream_type() const
-{
-    return frame_ptr ? frame_ptr->get_stream_type() : RS_STREAM_COUNT;
-}
-
-std::chrono::high_resolution_clock::time_point frame_archive::frame_ref::get_frame_callback_start_time_point() const
-{
-    return frame_ptr ? frame_ptr->get_frame_callback_start_time_point() :  std::chrono::high_resolution_clock::now();
-}
-
-void frame_archive::frame_ref::update_frame_callback_start_ts(std::chrono::high_resolution_clock::time_point ts)
-{
-    frame_ptr->update_frame_callback_start_ts(ts);
-}
-
-double frame_archive::frame::get_frame_metadata(rs_frame_metadata frame_metadata) const
-{
-    if (!supports_frame_metadata(frame_metadata))
-        throw std::logic_error("unsupported metadata type");
-
-    switch (frame_metadata)
-    {
-        case RS_FRAME_METADATA_ACTUAL_EXPOSURE:
-            return additional_data.exposure_value;
-            break;
-        default:
-            throw std::logic_error("unsupported metadata type");
-            break;
-    }
-}
-
-bool frame_archive::frame::supports_frame_metadata(rs_frame_metadata frame_metadata) const
-{
-    for (auto & md : additional_data.supported_metadata_vector) if (md == frame_metadata) return true;
-    return false;
-}
-
-const byte* frame_archive::frame::get_frame_data() const
-{
-	const byte* frame_data = data.data();;
+    const byte* frame_data = data.data();
 
     if (on_release.get_data())
     {
         frame_data = static_cast<const byte*>(on_release.get_data());
-        if (additional_data.pad < 0)
-        {
-            frame_data += (int)(additional_data.stride_x *additional_data.bpp*(-additional_data.pad) + (-additional_data.pad)*additional_data.bpp);
-        }
     }
 
     return frame_data;
 }
 
-rs_timestamp_domain frame_archive::frame::get_frame_timestamp_domain() const
+rs2_timestamp_domain frame::get_frame_timestamp_domain() const
 {
     return additional_data.timestamp_domain;
 }
 
-double frame_archive::frame::get_frame_timestamp() const
+rs2_time_t frame::get_frame_timestamp() const
 {
     return additional_data.timestamp;
 }
 
-unsigned long long frame_archive::frame::get_frame_number() const
+unsigned long long frame::get_frame_number() const
 {
     return additional_data.frame_number;
 }
 
-long long frame_archive::frame::get_frame_system_time() const
+rs2_time_t frame::get_frame_system_time() const
 {
     return additional_data.system_time;
 }
 
-int frame_archive::frame::get_width() const
-{
-    return additional_data.width;
-}
-
-int frame_archive::frame::get_height() const
-{
-    return additional_data.stride_y ? std::min(additional_data.height, additional_data.stride_y) : additional_data.height;
-}
-
-int frame_archive::frame::get_framerate() const
-{
-    return additional_data.fps;
-}
-
-int frame_archive::frame::get_stride() const
-{
-    return (additional_data.stride_x * additional_data.bpp) / 8;
-}
-
-int frame_archive::frame::get_bpp() const
-{
-    return additional_data.bpp;
-}
-
-
-void frame_archive::frame::update_frame_callback_start_ts(std::chrono::high_resolution_clock::time_point ts)
+void frame::update_frame_callback_start_ts(rs2_time_t ts)
 {
     additional_data.frame_callback_started = ts;
 }
 
-
-rs_format frame_archive::frame::get_format() const
-{
-    return additional_data.format;
-}
-rs_stream frame_archive::frame::get_stream_type() const
-{
-    return additional_data.stream_type;
-}
-
-std::chrono::high_resolution_clock::time_point frame_archive::frame::get_frame_callback_start_time_point() const
+rs2_time_t frame::get_frame_callback_start_time_point() const
 {
     return additional_data.frame_callback_started;
 }
 
-void frame_archive::log_frame_callback_end(frame* frame)
+void frame::log_callback_start(rs2_time_t timestamp)
 {
-    auto callback_ended = std::chrono::high_resolution_clock::now();
-    auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(callback_ended - capture_started).count();
-    auto callback_warning_duration = 1000 / (frame->additional_data.fps+1);
-    auto callback_duration = std::chrono::duration_cast<std::chrono::milliseconds>(callback_ended - frame->get_frame_callback_start_time_point()).count();
+    update_frame_callback_start_ts(timestamp);
+    LOG_DEBUG("CallbackStarted," << std::dec << librealsense::get_string(get_stream()->get_stream_type()) << "," << get_frame_number() << ",DispatchedAt," << timestamp);
+}
+
+void frame::log_callback_end(rs2_time_t timestamp) const
+{
+    auto callback_warning_duration = 1000.f / (get_stream()->get_framerate() + 1);
+    auto callback_duration = timestamp - get_frame_callback_start_time_point();
+
+    LOG_DEBUG("CallbackFinished," << librealsense::get_string(get_stream()->get_stream_type()) << "," << get_frame_number() << ",DispatchedAt," << timestamp);
 
     if (callback_duration > callback_warning_duration)
     {
-        LOG_INFO("Frame Callback took too long to complete. (Duration: " << callback_duration << "ms, FPS: " << frame->additional_data.fps << ", Max Duration: " << callback_warning_duration << "ms)");
+        LOG_INFO("Frame Callback " << librealsense::get_string(get_stream()->get_stream_type())
+                 << "#" << std::dec << get_frame_number()
+                 << "overdue. (Duration: " << callback_duration
+                 << "ms, FPS: " << get_stream()->get_framerate() << ", Max Duration: " << callback_warning_duration << "ms)");
     }
-
-    LOG_DEBUG("CallbackFinished," << rsimpl::get_string(frame->get_stream_type()) << "," << frame->get_frame_number() << ",DispatchedAt," << ts);
-}
-
-void frame_archive::frame_ref::log_callback_start(std::chrono::high_resolution_clock::time_point capture_start_time)
-{
-    auto callback_start_time = std::chrono::high_resolution_clock::now();
-    auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(callback_start_time - capture_start_time).count();
-    LOG_DEBUG("CallbackStarted," << rsimpl::get_string(get_stream_type()) << "," << get_frame_number() << ",DispatchedAt," << ts);
 }

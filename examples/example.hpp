@@ -1,136 +1,99 @@
 // License: Apache 2.0. See LICENSE file in root directory.
 // Copyright(c) 2015 Intel Corporation. All Rights Reserved.
 
+#pragma once
+
 #define GLFW_INCLUDE_GLU
 #include <GLFW/glfw3.h>
 
+#include <string>
 #include <sstream>
-#include <vector>
+#include <iostream>
 
-inline void make_depth_histogram(uint8_t rgb_image[640*480*3], const uint16_t depth_image[], int width, int height)
+//////////////////////////////
+// Basic Data Types         //
+//////////////////////////////
+
+struct float3 { float x, y, z; };
+struct float2 { float x, y; };
+
+struct rect
 {
-    static uint32_t histogram[0x10000];
-    memset(histogram, 0, sizeof(histogram));
+    float x, y;
+    float w, h;
 
-    for(int i = 0; i < width*height; ++i) ++histogram[depth_image[i]];
-    for(int i = 2; i < 0x10000; ++i) histogram[i] += histogram[i-1]; // Build a cumulative histogram for the indices in [1,0xFFFF]
-    for(int i = 0; i < width*height; ++i)
+    // Create new rect within original boundaries with give aspect ration
+    rect adjust_ratio(float2 size) const
     {
-        if(uint16_t d = depth_image[i])
+        auto H = static_cast<float>(h), W = static_cast<float>(h) * size.x / size.y;
+        if (W > w)
         {
-            int f = histogram[d] * 255 / histogram[0xFFFF]; // 0-255 based on histogram location
-            rgb_image[i*3 + 0] = 255 - f;
-            rgb_image[i*3 + 1] = 0;
-            rgb_image[i*3 + 2] = f;
+            auto scale = w / W;
+            W *= scale;
+            H *= scale;
         }
-        else
-        {
-            rgb_image[i*3 + 0] = 20;
-            rgb_image[i*3 + 1] = 5;
-            rgb_image[i*3 + 2] = 0;
-        }
+
+        return{ x + (w - W) / 2, y + (h - H) / 2, W, H };
     }
-}
+};
 
 //////////////////////////////
 // Simple font loading code //
 //////////////////////////////
 
-#include "third_party/stb_easy_font.h"
-
-inline int get_text_width(const char * text)
-{
-    return stb_easy_font_width((char *)text);
-}
+#include "../third-party/stb_easy_font.h"
 
 inline void draw_text(int x, int y, const char * text)
 {
     char buffer[60000]; // ~300 chars
     glEnableClientState(GL_VERTEX_ARRAY);
     glVertexPointer(2, GL_FLOAT, 16, buffer);
-    glDrawArrays(GL_QUADS, 0, 4*stb_easy_font_print((float)x, (float)(y-7), (char *)text, nullptr, buffer, sizeof(buffer)));
+    glDrawArrays(GL_QUADS, 0, 4 * stb_easy_font_print((float)x, (float)(y - 7), (char *)text, nullptr, buffer, sizeof(buffer)));
     glDisableClientState(GL_VERTEX_ARRAY);
 }
 
 ////////////////////////
 // Image display code //
 ////////////////////////
-
-class texture_buffer
+class texture
 {
-    GLuint texture;
-    double last_timestamp;
-    std::vector<uint8_t> rgb;
-
-    int fps, num_frames;
-    double next_time;
-
 public:
-    texture_buffer() : texture(), last_timestamp(-1), fps(), num_frames(), next_time(1000) {}
-
-    GLuint get_gl_handle() const { return texture; }
-
-    void upload(const void * data, int width, int height, rs::format format, int stride = 0)
+    void render(const rs2::video_frame& frame, const rect& r)
     {
-        // If the frame timestamp has changed since the last time show(...) was called, re-upload the texture
-        if(!texture) glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
-        stride = stride == 0 ? width : stride;
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
-        switch(format)
+        upload(frame);
+        show(r.adjust_ratio({ float(width), float(height) }));
+    }
+
+    void upload(const rs2::video_frame& frame)
+    {
+        if (!frame) return;
+
+        if (!gl_handle)
+            glGenTextures(1, &gl_handle);
+        GLenum err = glGetError();
+
+        auto format = frame.get_profile().format();
+        width = frame.get_width();
+        height = frame.get_height();
+        stream = frame.get_profile().stream_type();
+
+        glBindTexture(GL_TEXTURE_2D, gl_handle);
+
+        switch (format)
         {
-        case rs::format::any:
-        throw std::runtime_error("not a valid format");
-        case rs::format::z16:
-        case rs::format::disparity16:
-            rgb.resize(stride * height * 3);
-            make_depth_histogram(rgb.data(), reinterpret_cast<const uint16_t *>(data), stride, height);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, stride, height, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
-            
+        case RS2_FORMAT_RGB8:
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, frame.get_data());
             break;
-        case rs::format::xyz32f:
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, data);
+        case RS2_FORMAT_RGBA8:
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame.get_data());
             break;
-        case rs::format::yuyv: // Display YUYV by showing the luminance channel and packing chrominance into ignored alpha channel
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, data);
-            break;
-        case rs::format::rgb8: case rs::format::bgr8: // Display both RGB and BGR by interpreting them RGB, to show the flipped byte ordering. Obviously, GL_BGR could be used on OpenGL 1.2+
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-            break;
-        case rs::format::rgba8: case rs::format::bgra8: // Display both RGBA and BGRA by interpreting them RGBA, to show the flipped byte ordering. Obviously, GL_BGRA could be used on OpenGL 1.2+
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-            break;
-        case rs::format::y8:
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,  width, height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, data);
-            break;
-        case rs::format::y16:
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_LUMINANCE, GL_UNSIGNED_SHORT, data);
-            break;
-        case rs::format::raw8:
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, width, height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, data);
-            break;
-        case rs::format::raw10:
-            {
-                // Visualize Raw10 by performing a naive downsample. Each 2x2 block contains one red pixel, two green pixels, and one blue pixel, so combine them into a single RGB triple.
-                rgb.clear(); rgb.resize(width/2 * height/2 * 3);
-                auto out = rgb.data(); auto in0 = reinterpret_cast<const uint8_t *>(data), in1 = in0 + width*5/4;
-                for(int y=0; y<height; y+=2)
-                {
-                    for(int x=0; x<width; x+=4)
-                    {
-                        *out++ = in0[0]; *out++ = (in0[1] + in1[0]) / 2; *out++ = in1[1]; // RGRG -> RGB RGB
-                        *out++ = in0[2]; *out++ = (in0[3] + in1[2]) / 2; *out++ = in1[3]; // GBGB
-                        in0 += 5; in1 += 5;
-                    }
-                    in0 = in1; in1 += width*5/4;
-                }
-                glPixelStorei(GL_UNPACK_ROW_LENGTH, width / 2);        // Update row stride to reflect post-downsampling dimensions of the target texture
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width/2, height/2, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
-            }
+        case RS2_FORMAT_Y8:
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, frame.get_data());
             break;
         default:
-            throw std::runtime_error("The requested format is not provided by demo");
+            throw std::runtime_error("The requested format is not supported by this demo!");
         }
+
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
@@ -139,145 +102,225 @@ public:
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    void upload(rs::device & dev, rs::stream stream)
+    GLuint get_gl_handle() { return gl_handle; }
+
+    void show(const rect& r) const
     {
-        if (stream <= rs::stream::fisheye)
-            assert(dev.is_stream_enabled(stream));
+        if (!gl_handle)
+            return;
 
-        const double timestamp = dev.get_frame_timestamp(stream);
-        if(timestamp != last_timestamp)
-        {
-            upload(dev.get_frame_data(stream), dev.get_stream_width(stream), dev.get_stream_height(stream), dev.get_stream_format(stream));
-            last_timestamp = timestamp;
-
-            ++num_frames;
-            if(timestamp >= next_time)
-            {
-                fps = num_frames;
-                num_frames = 0;
-                next_time += 1000;
-            }
-        }
-    }
-
-    void upload(rs::frame& frame)
-    {
-        const double timestamp = frame.get_timestamp();
-        if(timestamp != last_timestamp)
-        {
-            upload(frame.get_data(), frame.get_width(), frame.get_height(), frame.get_format(), (frame.get_stride() * 8) / frame.get_bpp());
-            last_timestamp = timestamp;
-
-            ++num_frames;
-            if(timestamp >= next_time)
-            {
-                fps = num_frames;
-                num_frames = 0;
-                next_time += 1000;
-            }
-        }
-    }
-
-    void show(float rx, float ry, float rw, float rh) const
-    {
-        glBindTexture(GL_TEXTURE_2D, texture);
+        glBindTexture(GL_TEXTURE_2D, gl_handle);
         glEnable(GL_TEXTURE_2D);
-        glBegin(GL_QUADS);
-        glTexCoord2f(0, 0); glVertex2f(rx,    ry   );
-        glTexCoord2f(1, 0); glVertex2f(rx+rw, ry   );
-        glTexCoord2f(1, 1); glVertex2f(rx+rw, ry+rh);
-        glTexCoord2f(0, 1); glVertex2f(rx,    ry+rh);
+        glBegin(GL_QUAD_STRIP);
+        glTexCoord2f(0.f, 1.f); glVertex2f(r.x, r.y + r.h);
+        glTexCoord2f(0.f, 0.f); glVertex2f(r.x, r.y);
+        glTexCoord2f(1.f, 1.f); glVertex2f(r.x + r.w, r.y + r.h);
+        glTexCoord2f(1.f, 0.f); glVertex2f(r.x + r.w, r.y);
         glEnd();
         glDisable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, 0);
+
+        draw_text((int)r.x + 15, (int)r.y + 20, rs2_stream_to_string(stream));
     }
-
-    void print(int x, int y, const char * text)
-    {
-        char buffer[20000]; // ~100 chars
-
-        glEnableClientState(GL_VERTEX_ARRAY);
-        glVertexPointer(2, GL_FLOAT, 16, buffer);
-        glDrawArrays(GL_QUADS, 0, 4*stb_easy_font_print((float)x, (float)y, (char *)text, nullptr, buffer, sizeof(buffer)));
-        glDisableClientState(GL_VERTEX_ARRAY);
-    }
-
-    void show(rs::device & dev, rs::stream stream, int rx, int ry, int rw, int rh)
-    {
-        if((stream <= rs::stream::fisheye) && (!dev.is_stream_enabled(stream))) return;
-
-        upload(dev, stream);
-        
-        int width = dev.get_stream_width(stream), height = dev.get_stream_height(stream);
-        float h = (float)rh, w = (float)rh * width / height;
-        if(w > rw)
-        {
-            float scale = rw/w;
-            w *= scale;
-            h *= scale;
-        }
-
-        show(rx + (rw - w)/2, ry + (rh - h)/2, w, h);
-        std::ostringstream ss; ss << stream << ": " << width << " x " << height << " " << dev.get_stream_format(stream) << " (" << fps << "/" << dev.get_stream_framerate(stream) << ")" << ", F#: " << dev.get_frame_number(stream);
-        glColor3f(0,0,0);
-        draw_text(rx+9, ry+17, ss.str().c_str());
-        glColor3f(1,1,1);
-        draw_text(rx+8, ry+16, ss.str().c_str());
-    }
-
-    void show(rs::stream stream, rs::format format, int stream_framerate, unsigned long long frame_number, double timestamp, int rx, int ry, int rw, int rh, int width, int height)
-    {
-        show(rx, ry, rw, rh, width, height);
-        if (frame_number != 0)
-        {
-            std::ostringstream ss; ss << stream << ": " << width << " x " << height << " " << format << " (" << fps << "/" << stream_framerate << ")" << ", F#: " << frame_number << ", TS: " << timestamp;
-            glColor3f(0,0,0);
-            draw_text(rx+9, ry+17, ss.str().c_str());
-            glColor3f(1,1,1);
-            draw_text(rx+8, ry+16, ss.str().c_str());
-        }
-    }
-
-    void show(int rx, int ry, int rw, int rh, int width, int height)
-    {
-        float h = (float)rh, w = (float)rh * width / height;
-        if (w > rw)
-        {
-            float scale = rw / w;
-            w *= scale;
-            h *= scale;
-        }
-
-        show(rx + (rw - w) / 2, ry + (rh - h) / 2, w, h);
-    }
-
-    void show(const void * data, int width, int height, rs::format format, const std::string & caption, int rx, int ry, int rw, int rh)
-    {
-        if(!data) return;
-
-        upload(data, width, height, format);
-        
-        float h = (float)rh, w = (float)rh * width / height;
-        if(w > rw)
-        {
-            float scale = rw/w;
-            w *= scale;
-            h *= scale;
-        }
-
-        show(rx + (rw - w)/2, ry + (rh - h)/2, w, h);
-
-        std::ostringstream ss; ss << caption << ": " << width << " x " << height << " " << format;
-        glColor3f(0,0,0);
-        draw_text(rx+9, ry+17, ss.str().c_str());
-        glColor3f(1,1,1);
-        draw_text(rx+8, ry+16, ss.str().c_str());
-    }
+private:
+    GLuint gl_handle = 0;
+    int width = 0;
+    int height = 0;
+    rs2_stream stream = RS2_STREAM_ANY;
 };
 
-inline void draw_depth_histogram(const uint16_t depth_image[], int width, int height)
+class window
 {
-    static uint8_t rgb_image[640*480*3];
-    make_depth_histogram(rgb_image, depth_image, width, height);
-    glDrawPixels(width, height, GL_RGB, GL_UNSIGNED_BYTE, rgb_image);
+public:
+    std::function<void(bool)>           on_left_mouse   = [](bool) {};
+    std::function<void(double, double)> on_mouse_scroll = [](double, double) {};
+    std::function<void(double, double)> on_mouse_move   = [](double, double) {};
+    std::function<void(int)>            on_key_release  = [](int) {};
+
+    window(int width, int height, const char* title)
+        : _width(width), _height(height)
+    {
+        glfwInit();
+        win = glfwCreateWindow(width, height, title, nullptr, nullptr);
+        if (!win)
+            throw std::runtime_error("Could not open OpenGL window, please check your graphic drivers or use the textual SDK tools");
+        glfwMakeContextCurrent(win);
+
+        glfwSetWindowUserPointer(win, this);
+        glfwSetMouseButtonCallback(win, [](GLFWwindow * win, int button, int action, int mods)
+        {
+            auto s = (window*)glfwGetWindowUserPointer(win);
+            if (button == 0) s->on_left_mouse(action == GLFW_PRESS);
+        });
+
+        glfwSetScrollCallback(win, [](GLFWwindow * win, double xoffset, double yoffset)
+        {
+            auto s = (window*)glfwGetWindowUserPointer(win);
+            s->on_mouse_scroll(xoffset, yoffset);
+        });
+
+        glfwSetCursorPosCallback(win, [](GLFWwindow * win, double x, double y)
+        {
+            auto s = (window*)glfwGetWindowUserPointer(win);
+            s->on_mouse_move(x, y);
+        });
+
+        glfwSetKeyCallback(win, [](GLFWwindow * win, int key, int scancode, int action, int mods)
+        {
+            auto s = (window*)glfwGetWindowUserPointer(win);
+            if (0 == action) // on key release
+            {
+                s->on_key_release(key);
+            }
+        });
+    }
+
+    float width() const { return float(_width); }
+    float height() const { return float(_height); }
+
+    operator bool()
+    {
+        glPopMatrix();
+        glfwSwapBuffers(win);
+
+        auto res = !glfwWindowShouldClose(win);
+
+        glfwPollEvents();
+        glfwGetFramebufferSize(win, &_width, &_height);
+
+        // Clear the framebuffer
+        glClear(GL_COLOR_BUFFER_BIT);
+        glViewport(0, 0, _width, _height);
+
+        // Draw the images
+        glPushMatrix();
+        glfwGetWindowSize(win, &_width, &_height);
+        glOrtho(0, _width, _height, 0, -1, +1);
+
+        return res;
+    }
+
+    ~window()
+    {
+        glfwDestroyWindow(win);
+        glfwTerminate();
+    }
+
+    operator GLFWwindow*() { return win; }
+
+private:
+    GLFWwindow* win;
+    int _width, _height;
+};
+
+// Struct for managing rotation of pointcloud view
+struct glfw_state {
+    glfw_state() : yaw(15.0), pitch(15.0), last_x(0.0), last_y(0.0),
+        ml(false), offset_x(2.f), offset_y(2.f), tex() {}
+    double yaw;
+    double pitch;
+    double last_x;
+    double last_y;
+    bool ml;
+    float offset_x;
+    float offset_y;
+    texture tex;
+};
+
+
+// Handles all the OpenGL calls needed to display the point cloud
+void draw_pointcloud(float width, float height, glfw_state& app_state, rs2::points& points)
+{
+    if (!points)
+        return;
+
+    // OpenGL commands that prep screen for the pointcloud
+    glPopMatrix();
+    glPushAttrib(GL_ALL_ATTRIB_BITS);
+
+    glClearColor(153.f / 255, 153.f / 255, 153.f / 255, 1);
+    glClear(GL_DEPTH_BUFFER_BIT);
+
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    gluPerspective(60, width / height, 0.01f, 10.0f);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    gluLookAt(0, 0, 0, 0, 0, 1, 0, -1, 0);
+
+    glTranslatef(0, 0, +0.5f + app_state.offset_y*0.05f);
+    glRotated(app_state.pitch, 1, 0, 0);
+    glRotated(app_state.yaw, 0, 1, 0);
+    glTranslatef(0, 0, -0.5f);
+
+    glPointSize(width / 640);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, app_state.tex.get_gl_handle());
+    float tex_border_color[] = { 0.8f, 0.8f, 0.8f, 0.8f };
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, tex_border_color);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); // GL_CLAMP_TO_EDGE
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F); // GL_CLAMP_TO_EDGE
+    glBegin(GL_POINTS);
+
+
+    /* this segment actually prints the pointcloud */
+    auto vertices = points.get_vertices();              // get vertices
+    auto tex_coords = points.get_texture_coordinates(); // and texture coordinates
+    for (int i = 0; i < points.size(); i++)
+    {
+        if (vertices[i].z)
+        {
+            // upload the point and texture coordinates only for points we have depth data for
+            glVertex3fv(vertices[i]);
+            glTexCoord2fv(tex_coords[i]);
+        }
+    }
+
+    // OpenGL cleanup
+    glEnd();
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glPopAttrib();
+    glPushMatrix();
+}
+
+// Registers the state variable and callbacks to allow mouse control of the pointcloud
+void register_glfw_callbacks(window& app, glfw_state& app_state)
+{
+    app.on_left_mouse = [&](bool pressed)
+    {
+        app_state.ml = pressed;
+    };
+
+    app.on_mouse_scroll = [&](double xoffset, double yoffset)
+    {
+        app_state.offset_x -= static_cast<float>(xoffset);
+        app_state.offset_y -= static_cast<float>(yoffset);
+    };
+
+    app.on_mouse_move = [&](double x, double y)
+    {
+        if (app_state.ml)
+        {
+            app_state.yaw -= (x - app_state.last_x);
+            app_state.yaw = std::max(app_state.yaw, -120.0);
+            app_state.yaw = std::min(app_state.yaw, +120.0);
+            app_state.pitch += (y - app_state.last_y);
+            app_state.pitch = std::max(app_state.pitch, -80.0);
+            app_state.pitch = std::min(app_state.pitch, +80.0);
+        }
+        app_state.last_x = x;
+        app_state.last_y = y;
+    };
+
+    app.on_key_release = [&](int key)
+    {
+        if (key == 32) // Escape
+        {
+            app_state.yaw = app_state.pitch = 0; app_state.offset_x = app_state.offset_y = 0.0;
+        }
+    };
 }

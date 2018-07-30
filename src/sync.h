@@ -2,71 +2,170 @@
 // Copyright(c) 2015 Intel Corporation. All Rights Reserved.
 
 #pragma once
-#ifndef LIBREALSENSE_SYNC_H
-#define LIBREALSENSE_SYNC_H
 
+#include "types.h"
 #include "archive.h"
-#include <atomic>
-#include "timestamps.h"
 
-namespace rsimpl
+#include <stdint.h>
+#include <vector>
+#include <mutex>
+#include <memory>
+
+namespace librealsense
 {
-    class syncronizing_archive : public frame_archive
+
+    typedef int stream_id;
+
+    class sync_lock
     {
-    private:
-        // This data will be left constant after creation, and accessed from all threads
-        subdevice_mode_selection modes[RS_STREAM_NATIVE_COUNT];
-        rs_stream key_stream;
-        std::vector<rs_stream> other_streams;
-
-        // This data will be read and written exclusively from the application thread
-        frameset frontbuffer;
-
-        // This data will be read and written by all threads, and synchronized with a mutex
-        std::vector<frame> frames[RS_STREAM_NATIVE_COUNT];
-        std::condition_variable_any cv;
-        
-        void get_next_frames();
-        void dequeue_frame(rs_stream stream);
-        void discard_frame(rs_stream stream);
-        void cull_frames();
-
-        timestamp_corrector            ts_corrector;
     public:
-        syncronizing_archive(const std::vector<subdevice_mode_selection> & selection, 
-            rs_stream key_stream, 
-            std::atomic<uint32_t>* max_size,
-            std::atomic<uint32_t>* event_queue_size,
-            std::atomic<uint32_t>* events_timeout,
-            std::chrono::high_resolution_clock::time_point capture_started = std::chrono::high_resolution_clock::now());
-        
-        // Application thread API
-        void wait_for_frames();
-        bool poll_for_frames();
+        sync_lock(std::mutex& mutex) : _mutex(mutex)
+        {
+            mutex.lock();
+        }
 
-        frameset * wait_for_frames_safe();
-        bool poll_for_frames_safe(frameset ** frames);
+        void unlock_preemptively()
+        {
+            // NOTE: The Sync_Lock is itself a single-threaded object
+            // It maintains a state, and does not protect its state.
+            // That is acceptable for our use case,
+            // because we use it to communicate within a single thread
+            if (!_is_locked) return;
+            _mutex.unlock();
+            _is_locked = false;
 
-        double get_frame_metadata(rs_stream stream, rs_frame_metadata frame_metadata) const;
-        bool supports_frame_metadata(rs_stream stream, rs_frame_metadata frame_metadata) const;
-        const byte * get_frame_data(rs_stream stream) const;
-        double get_frame_timestamp(rs_stream stream) const;
-        unsigned long long get_frame_number(rs_stream stream) const;
-        long long get_frame_system_time(rs_stream stream) const;
-        int get_frame_stride(rs_stream stream) const;
-        int get_frame_bpp(rs_stream stream) const;
+        }
 
-        frameset * clone_frontbuffer();
+        ~sync_lock()
+        {
+            if (_is_locked)
+            {
+                _mutex.unlock();
 
-        // Frame callback thread API
-        void commit_frame(rs_stream stream);
+            }
+        }
 
-        void flush() override;
+    private:
+        bool _is_locked = true;
 
-        void correct_timestamp(rs_stream stream);
-        void on_timestamp(rs_timestamp_data data);
+        std::mutex& _mutex;
+    };
+    //sync_lock::ref = 0;
+
+    class synthetic_source_interface;
+
+    struct syncronization_environment
+    {
+        synthetic_source_interface* source;
+        //sync_lock& lock_ref;
+        single_consumer_queue<frame_holder>& matches;
+    };
+
+    typedef int stream_id;
+    typedef std::function<void(frame_holder, syncronization_environment)> sync_callback;
+
+    class matcher_interface
+    {
+    public:
+        virtual void dispatch(frame_holder f, syncronization_environment env) = 0;
+        virtual void sync(frame_holder f, syncronization_environment env) = 0;
+        virtual void set_callback(sync_callback f) = 0;
+        virtual const std::vector<stream_id>& get_streams() const = 0;
+        virtual const std::vector<rs2_stream>& get_streams_types() const = 0;
+        virtual std::string get_name() const = 0;
+    };
+
+    class matcher: public matcher_interface
+    {
+    public:
+        matcher(std::vector<stream_id> streams_id = {});
+        virtual void sync(frame_holder f, syncronization_environment env);
+        virtual void set_callback(sync_callback f);
+        const std::vector<stream_id>& get_streams() const override;
+        const std::vector<rs2_stream>& get_streams_types() const override;
+
+        callback_invocation_holder begin_callback();
+        virtual ~matcher();
+
+        virtual std::string get_name() const;
+        bool get_active() const;
+        void set_active(const bool active);
+
+    protected:
+       std::vector<stream_id> _streams_id;
+       std::vector<rs2_stream> _streams_type;
+       sync_callback _callback;
+       callbacks_heap _callback_inflight;
+       std::string _name;
+       bool _active = true;
+    };
+
+    class identity_matcher : public matcher
+    {
+    public:
+        identity_matcher(stream_id stream, rs2_stream streams_type);
+
+        void dispatch(frame_holder f, syncronization_environment env) override;
+
+    };
+
+    class composite_matcher : public matcher
+    {
+    public:
+        composite_matcher(std::vector<std::shared_ptr<matcher>> matchers, std::string name);
+
+
+        virtual bool are_equivalent(frame_holder& a, frame_holder& b) = 0;
+        virtual bool is_smaller_than(frame_holder& a, frame_holder& b) = 0;
+        virtual bool skip_missing_stream(std::vector<matcher*> synced, matcher* missing)  = 0;
+        virtual void clean_inactive_streams(frame_holder& f) = 0;
+        virtual void update_last_arrived(frame_holder& f, matcher* m) = 0;
+
+        void dispatch(frame_holder f, syncronization_environment env) override;
+        std::string frames_to_string(std::vector<librealsense::matcher*> matchers);
+        void sync(frame_holder f, syncronization_environment env) override;
+        std::shared_ptr<matcher> find_matcher(const frame_holder& f);
+
+    protected:
+        virtual void update_next_expected(const frame_holder& f) = 0;
+
+        std::map<matcher*, single_consumer_queue<frame_holder>> _frames_queue;
+        std::map<stream_id, std::shared_ptr<matcher>> _matchers;
+        std::map<matcher*, double> _next_expected;
+        std::map<matcher*, rs2_timestamp_domain> _next_expected_domain;
+    };
+
+    class frame_number_composite_matcher : public composite_matcher
+    {
+    public:
+        frame_number_composite_matcher(std::vector<std::shared_ptr<matcher>> matchers);
+        virtual void update_last_arrived(frame_holder& f, matcher* m) override;
+        bool are_equivalent(frame_holder& a, frame_holder& b) override;
+        bool is_smaller_than(frame_holder& a, frame_holder& b) override;
+        bool skip_missing_stream(std::vector<matcher*> synced, matcher* missing) override;
+        void clean_inactive_streams(frame_holder& f) override;
+        void update_next_expected(const frame_holder& f) override;
+
+    private:
+         std::map<matcher*,unsigned long long> _last_arrived;
+    };
+
+    class timestamp_composite_matcher : public composite_matcher
+    {
+    public:
+        timestamp_composite_matcher(std::vector<std::shared_ptr<matcher>> matchers);
+        bool are_equivalent(frame_holder& a, frame_holder& b) override;
+        bool is_smaller_than(frame_holder& a, frame_holder& b) override;
+        virtual void update_last_arrived(frame_holder& f, matcher* m) override;
+        void clean_inactive_streams(frame_holder& f) override;
+        bool skip_missing_stream(std::vector<matcher*> synced, matcher* missing) override;
+        void update_next_expected(const frame_holder & f) override;
+
+    private:
+        unsigned int get_fps(const frame_holder & f);
+        bool are_equivalent(double a, double b, int fps);
+        std::map<matcher*, double> _last_arrived;
+        std::map<matcher*, unsigned int> _fps;
 
     };
 }
-
-#endif

@@ -9,40 +9,247 @@
 #ifndef LIBREALSENSE_TYPES_H
 #define LIBREALSENSE_TYPES_H
 
-#include "../include/librealsense/rs.h"     // Inherit all type definitions in the public API
-#include "../include/librealsense/rscore.hpp" // Inherit public interfaces
+#include "../include/librealsense2/hpp/rs_types.hpp"
 
+#include <stdint.h>
 #include <cassert>                          // For assert
 #include <cstring>                          // For memcmp
 #include <vector>                           // For vector
 #include <sstream>                          // For ostringstream
 #include <mutex>                            // For mutex, unique_lock
-#include <condition_variable>               // For condition_variable
 #include <memory>                           // For unique_ptr
-#include <atomic>
-#include <map>          
+#include <map>
+#include <limits>
 #include <algorithm>
+#include <condition_variable>
+#include <functional>
+#include <utility>                          // For std::forward
+#include "backend.h"
+#include "concurrency.h"
+#if BUILD_EASYLOGGINGPP
+#include "../third-party/easyloggingpp/src/easylogging++.h"
+#endif // BUILD_EASYLOGGINGPP
 
-const uint8_t RS_STREAM_NATIVE_COUNT    = 5;
-const int RS_USER_QUEUE_SIZE = 20;
-const int RS_MAX_EVENT_QUEUE_SIZE = 500;
-const int RS_MAX_EVENT_TINE_OUT = 10;
+typedef unsigned char byte;
 
+const int RS2_USER_QUEUE_SIZE = 128;
 
-namespace rsimpl
+#ifndef DBL_EPSILON
+const double DBL_EPSILON = 2.2204460492503131e-016;  // smallest such that 1.0+DBL_EPSILON != 1.0
+#endif
+
+#pragma warning(disable: 4250)
+
+#ifdef ANDROID
+#include "../common/android_helpers.h"
+#endif
+
+namespace librealsense
 {
+    #define UNKNOWN_VALUE "UNKNOWN"
+    const double TIMESTAMP_USEC_TO_MSEC = 0.001;
+
     ///////////////////////////////////
     // Utility types for general use //
     ///////////////////////////////////
-
-    typedef uint8_t byte;
-
     struct to_string
     {
         std::ostringstream ss;
         template<class T> to_string & operator << (const T & val) { ss << val; return *this; }
         operator std::string() const { return ss.str(); }
     };
+
+    template<typename T, size_t size>
+    inline size_t copy_array(T(&dst)[size], const T(&src)[size])
+    {
+        assert(dst != nullptr && src != nullptr);
+        for (size_t i = 0; i < size; i++)
+        {
+            dst[i] = src[i];
+        }
+        return size;
+    }
+
+    template<typename T, size_t sizem, size_t sizen>
+    inline size_t copy_2darray(T(&dst)[sizem][sizen], const T(&src)[sizem][sizen])
+    {
+        assert(dst != nullptr && src != nullptr);
+        for (size_t i = 0; i < sizem; i++)
+        {
+            for (size_t j = 0; j < sizen; j++)
+            {
+                dst[i][j] = src[i][j];
+            }
+        }
+        return sizem * sizen;
+    }
+
+    void copy(void* dst, void const* src, size_t size);
+
+    std::string make_less_screamy(const char* str);
+
+    ///////////////////////
+    // Logging mechanism //
+    ///////////////////////
+
+    void log_to_console(rs2_log_severity min_severity);
+    void log_to_file(rs2_log_severity min_severity, const char * file_path);
+
+#if BUILD_EASYLOGGINGPP
+
+#define LOG_DEBUG(...)   do { CLOG(DEBUG   ,"librealsense") << __VA_ARGS__; } while(false)
+#define LOG_INFO(...)    do { CLOG(INFO    ,"librealsense") << __VA_ARGS__; } while(false)
+#define LOG_WARNING(...) do { CLOG(WARNING ,"librealsense") << __VA_ARGS__; } while(false)
+#define LOG_ERROR(...)   do { CLOG(ERROR   ,"librealsense") << __VA_ARGS__; } while(false)
+#define LOG_FATAL(...)   do { CLOG(FATAL   ,"librealsense") << __VA_ARGS__; } while(false)
+
+#else // BUILD_EASYLOGGINGPP
+
+#define LOG_DEBUG(...)   do { ; } while(false)
+#define LOG_INFO(...)    do { ; } while(false)
+#define LOG_WARNING(...) do { ; } while(false)
+#define LOG_ERROR(...)   do { ; } while(false)
+#define LOG_FATAL(...)   do { ; } while(false)
+
+#endif // BUILD_EASYLOGGINGPP
+
+    // Enhancement for debug mode that incurs performance penalty with STL
+    // std::clamp to be introduced with c++17
+    template< typename T>
+    inline T clamp_val(T val, const T& min, const T& max)
+    {
+        static_assert((std::is_arithmetic<T>::value), "clamping supports arithmetic built-in types only");
+#ifdef _DEBUG
+        const T t = val < min ? min : val;
+        return t > max ? max : t;
+#else
+        return std::min(std::max(val, min), max);
+#endif
+    }
+
+    //////////////////////////
+    // Exceptions mechanism //
+    //////////////////////////
+
+
+    class librealsense_exception : public std::exception
+    {
+    public:
+        const char* get_message() const noexcept
+        {
+            return _msg.c_str();
+        }
+
+        rs2_exception_type get_exception_type() const noexcept
+        {
+            return _exception_type;
+        }
+
+        const char* what() const noexcept override
+        {
+            return _msg.c_str();
+        }
+
+    protected:
+        librealsense_exception(const std::string& msg,
+                               rs2_exception_type exception_type) noexcept
+            : _msg(msg),
+              _exception_type(exception_type)
+        {}
+
+    private:
+        std::string _msg;
+        rs2_exception_type _exception_type;
+    };
+
+    class recoverable_exception : public librealsense_exception
+    {
+    public:
+        recoverable_exception(const std::string& msg,
+            rs2_exception_type exception_type) noexcept;
+    };
+
+    class unrecoverable_exception : public librealsense_exception
+    {
+    public:
+        unrecoverable_exception(const std::string& msg,
+                                rs2_exception_type exception_type) noexcept
+            : librealsense_exception(msg, exception_type)
+        {
+            LOG_ERROR(msg);
+        }
+    };
+    class io_exception : public unrecoverable_exception
+    {
+    public:
+        io_exception(const std::string& msg) noexcept
+            : unrecoverable_exception(msg, RS2_EXCEPTION_TYPE_IO)
+        {}
+    };
+    class camera_disconnected_exception : public unrecoverable_exception
+    {
+    public:
+        camera_disconnected_exception(const std::string& msg) noexcept
+            : unrecoverable_exception(msg, RS2_EXCEPTION_TYPE_CAMERA_DISCONNECTED)
+        {}
+    };
+
+    class backend_exception : public unrecoverable_exception
+    {
+    public:
+        backend_exception(const std::string& msg,
+                          rs2_exception_type exception_type) noexcept
+            : unrecoverable_exception(msg, exception_type)
+        {}
+    };
+
+    class linux_backend_exception : public backend_exception
+    {
+    public:
+        linux_backend_exception(const std::string& msg) noexcept
+            : backend_exception(generate_last_error_message(msg), RS2_EXCEPTION_TYPE_BACKEND)
+        {}
+
+    private:
+        std::string generate_last_error_message(const std::string& msg) const
+        {
+            return msg + " Last Error: " + strerror(errno);
+        }
+    };
+
+    class windows_backend_exception : public backend_exception
+    {
+    public:
+        // TODO: get last error
+        windows_backend_exception(const std::string& msg) noexcept
+            : backend_exception(msg, RS2_EXCEPTION_TYPE_BACKEND)
+        {}
+    };
+
+    class invalid_value_exception : public recoverable_exception
+    {
+    public:
+        invalid_value_exception(const std::string& msg) noexcept
+            : recoverable_exception(msg, RS2_EXCEPTION_TYPE_INVALID_VALUE)
+        {}
+    };
+
+    class wrong_api_call_sequence_exception : public recoverable_exception
+    {
+    public:
+        wrong_api_call_sequence_exception(const std::string& msg) noexcept
+            : recoverable_exception(msg, RS2_EXCEPTION_TYPE_WRONG_API_CALL_SEQUENCE)
+        {}
+    };
+
+    class not_implemented_exception : public recoverable_exception
+    {
+    public:
+        not_implemented_exception(const std::string& msg) noexcept
+            : recoverable_exception(msg, RS2_EXCEPTION_TYPE_NOT_IMPLEMENTED)
+        {}
+    };
+
 
 #pragma pack(push, 1)
     template<class T> class big_endian
@@ -58,77 +265,325 @@ namespace rsimpl
     };
 #pragma pack(pop)
 
-    ///////////////////////
-    // Logging mechanism //
-    ///////////////////////
+    template <class T>
+    class lazy
+    {
+    public:
+        lazy() : _init([]() { T t{}; return t; }) {}
+        lazy(std::function<T()> initializer) : _init(std::move(initializer)) {}
 
-    void log(rs_log_severity severity, const std::string & message);
-    void log_to_console(rs_log_severity min_severity);
-    void log_to_file(rs_log_severity min_severity, const char * file_path);
-    void log_to_callback(rs_log_severity min_severity, rs_log_callback * callback);
-    void log_to_callback(rs_log_severity min_severity, void(*on_log)(rs_log_severity min_severity, const char * message, void * user), void * user);
-    rs_log_severity get_minimum_severity();
+        T* operator->() const
+        {
+            return operate();
+        }
 
-#define LOG(SEVERITY, ...) do { if(static_cast<int>(SEVERITY) >= rsimpl::get_minimum_severity()) { std::ostringstream ss; ss << __VA_ARGS__; rsimpl::log(SEVERITY, ss.str()); } } while(false)
-#define LOG_DEBUG(...)   LOG(RS_LOG_SEVERITY_DEBUG, __VA_ARGS__)
-#define LOG_INFO(...)    LOG(RS_LOG_SEVERITY_INFO,  __VA_ARGS__)
-#define LOG_WARNING(...) LOG(RS_LOG_SEVERITY_WARN,  __VA_ARGS__)
-#define LOG_ERROR(...)   LOG(RS_LOG_SEVERITY_ERROR, __VA_ARGS__)
-#define LOG_FATAL(...)   LOG(RS_LOG_SEVERITY_FATAL, __VA_ARGS__)
+        T& operator*()
+        {
+            return *operate();
+        }
+
+        const T& operator*() const
+        {
+            return *operate();
+        }
+
+        lazy(lazy&& other) noexcept
+        {
+            std::lock_guard<std::mutex> lock(other._mtx);
+            if (!other._was_init)
+            {
+                _init = move(other._init);
+                _was_init = false;
+            }
+            else
+            {
+                _init = move(other._init);
+                _was_init = true;
+                _ptr = move(other._ptr);
+            }
+        }
+
+        lazy& operator=(std::function<T()> func) noexcept
+        {
+            return *this = lazy<T>(std::move(func));
+        }
+
+        lazy& operator=(lazy&& other) noexcept
+        {
+            std::lock_guard<std::mutex> lock1(_mtx);
+            std::lock_guard<std::mutex> lock2(other._mtx);
+            if (!other._was_init)
+            {
+                _init = move(other._init);
+                _was_init = false;
+            }
+            else
+            {
+                _init = move(other._init);
+                _was_init = true;
+                _ptr = move(other._ptr);
+            }
+
+            return *this;
+        }
+
+    private:
+        T* operate() const
+        {
+            std::lock_guard<std::mutex> lock(_mtx);
+            if (!_was_init)
+            {
+                _ptr = std::unique_ptr<T>(new T(_init()));
+                _was_init = true;
+            }
+            return _ptr.get();
+        }
+
+        mutable std::mutex _mtx;
+        mutable bool _was_init = false;
+        std::function<T()> _init;
+        mutable std::unique_ptr<T> _ptr;
+    };
+
+    class unique_id
+    {
+    public:
+        static uint64_t generate_id()
+        {
+            static std::atomic<uint64_t> id(0);
+            return ++id;
+        }
+
+        unique_id(const unique_id&) = delete;
+        unique_id& operator=(const unique_id&) = delete;
+    };
+
+    template<typename T, int sz>
+    int arr_size(T(&)[sz])
+    {
+        return sz;
+    }
+
+    template<typename T>
+    std::string array2str(T& data)
+    {
+        std::stringstream ss;
+        for (auto i = 0; i < arr_size(data); i++)
+            ss << " [" << i << "] = " << data[i] << "\t";
+        return ss.str();
+    }
+
+    typedef float float_4[4];
 
     /////////////////////////////
     // Enumerated type support //
     /////////////////////////////
 
-#define RS_ENUM_HELPERS(TYPE, PREFIX) const char * get_string(TYPE value); \
-        inline bool is_valid(TYPE value) { return value >= 0 && value < RS_##PREFIX##_COUNT; } \
-        inline std::ostream & operator << (std::ostream & out, TYPE value) { if(is_valid(value)) return out << get_string(value); else return out << (int)value; }
-    RS_ENUM_HELPERS(rs_stream, STREAM)
-    RS_ENUM_HELPERS(rs_format, FORMAT)
-    RS_ENUM_HELPERS(rs_preset, PRESET)
-    RS_ENUM_HELPERS(rs_distortion, DISTORTION)
-    RS_ENUM_HELPERS(rs_option, OPTION)
-    RS_ENUM_HELPERS(rs_capabilities, CAPABILITIES)
-    RS_ENUM_HELPERS(rs_source, SOURCE)
-    RS_ENUM_HELPERS(rs_output_buffer_format, OUTPUT_BUFFER_FORMAT)
-    RS_ENUM_HELPERS(rs_event_source, EVENT_SOURCE)
-    RS_ENUM_HELPERS(rs_blob_type, BLOB_TYPE)
-    RS_ENUM_HELPERS(rs_camera_info, CAMERA_INFO)
-    RS_ENUM_HELPERS(rs_timestamp_domain, TIMESTAMP_DOMAIN)
-    #undef RS_ENUM_HELPERS
 
+#define RS2_ENUM_HELPERS(TYPE, PREFIX) const char* get_string(TYPE value); \
+        inline bool is_valid(TYPE value) { return value >= 0 && value < RS2_##PREFIX##_COUNT; } \
+        inline std::ostream & operator << (std::ostream & out, TYPE value) { if(is_valid(value)) return out << get_string(value); else return out << (int)value; } \
+        inline bool try_parse(const std::string& str, TYPE& res)       \
+        {                                                            \
+            for (int i = 0; i < static_cast<int>(RS2_ ## PREFIX ## _COUNT); i++) {  \
+                auto v = static_cast<TYPE>(i);                       \
+                if(str == get_string(v)) { res = v; return true; }   \
+            }                                                        \
+            return false;                                            \
+        }
+
+    RS2_ENUM_HELPERS(rs2_stream, STREAM)
+    RS2_ENUM_HELPERS(rs2_format, FORMAT)
+    RS2_ENUM_HELPERS(rs2_distortion, DISTORTION)
+    RS2_ENUM_HELPERS(rs2_option, OPTION)
+    RS2_ENUM_HELPERS(rs2_camera_info, CAMERA_INFO)
+    RS2_ENUM_HELPERS(rs2_frame_metadata_value, FRAME_METADATA)
+    RS2_ENUM_HELPERS(rs2_timestamp_domain, TIMESTAMP_DOMAIN)
+    RS2_ENUM_HELPERS(rs2_sr300_visual_preset, SR300_VISUAL_PRESET)
+    RS2_ENUM_HELPERS(rs2_extension, EXTENSION)
+    RS2_ENUM_HELPERS(rs2_exception_type, EXCEPTION_TYPE)
+    RS2_ENUM_HELPERS(rs2_log_severity, LOG_SEVERITY)
+    RS2_ENUM_HELPERS(rs2_notification_category, NOTIFICATION_CATEGORY)
+    RS2_ENUM_HELPERS(rs2_playback_status, PLAYBACK_STATUS)
+    RS2_ENUM_HELPERS(rs2_matchers, MATCHER)
     ////////////////////////////////////////////
     // World's tiniest linear algebra library //
     ////////////////////////////////////////////
-
-    struct int2 { int x,y; };
-    struct float3 { float x,y,z; float & operator [] (int i) { return (&x)[i]; } };
-    struct float3x3 { float3 x,y,z; float & operator () (int i, int j) { return (&x)[j][i]; } }; // column-major
+#pragma pack(push, 1)
+    struct int2 { int x, y; };
+    struct float2 { float x, y; float & operator [] (int i) { return (&x)[i]; } };
+    struct float3 { float x, y, z; float & operator [] (int i) { return (&x)[i]; } };
+    struct float4 { float x, y, z, w; float & operator [] (int i) { return (&x)[i]; } };
+    struct float3x3 { float3 x, y, z; float & operator () (int i, int j) { return (&x)[j][i]; } }; // column-major
     struct pose { float3x3 orientation; float3 position; };
-    inline bool operator == (const float3 & a, const float3 & b) { return a.x==b.x && a.y==b.y && a.z==b.z; }
-    inline float3 operator + (const float3 & a, const float3 & b) { return {a.x+b.x, a.y+b.y, a.z+b.z}; }
-    inline float3 operator * (const float3 & a, float b) { return {a.x*b, a.y*b, a.z*b}; }
-    inline bool operator == (const float3x3 & a, const float3x3 & b) { return a.x==b.x && a.y==b.y && a.z==b.z; }
+#pragma pack(pop)
+    inline bool operator == (const float3 & a, const float3 & b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
+    inline float3 operator + (const float3 & a, const float3 & b) { return{ a.x + b.x, a.y + b.y, a.z + b.z }; }
+    inline float3 operator * (const float3 & a, float b) { return{ a.x*b, a.y*b, a.z*b }; }
+    inline bool operator == (const float4 & a, const float4 & b) { return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w; }
+    inline float4 operator + (const float4 & a, const float4 & b) { return{ a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w }; }
+    inline bool operator == (const float3x3 & a, const float3x3 & b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
     inline float3 operator * (const float3x3 & a, const float3 & b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
-    inline float3x3 operator * (const float3x3 & a, const float3x3 & b) { return {a*b.x, a*b.y, a*b.z}; }
-    inline float3x3 transpose(const float3x3 & a) { return {{a.x.x,a.y.x,a.z.x}, {a.x.y,a.y.y,a.z.y}, {a.x.z,a.y.z,a.z.z}}; }
-    inline bool operator == (const pose & a, const pose & b) { return a.orientation==b.orientation && a.position==b.position; }
+    inline float3x3 operator * (const float3x3 & a, const float3x3 & b) { return{ a*b.x, a*b.y, a*b.z }; }
+    inline float3x3 transpose(const float3x3 & a) { return{ {a.x.x,a.y.x,a.z.x}, {a.x.y,a.y.y,a.z.y}, {a.x.z,a.y.z,a.z.z} }; }
+    inline bool operator == (const pose & a, const pose & b) { return a.orientation == b.orientation && a.position == b.position; }
     inline float3 operator * (const pose & a, const float3 & b) { return a.orientation * b + a.position; }
-    inline pose operator * (const pose & a, const pose & b) { return {a.orientation * b.orientation, a * b.position}; }
-    inline pose inverse(const pose & a) { auto inv = transpose(a.orientation); return {inv, inv * a.position * -1}; }
+    inline pose operator * (const pose & a, const pose & b) { return{ a.orientation * b.orientation, a * b.position }; }
+    inline pose inverse(const pose & a) { auto inv = transpose(a.orientation); return{ inv, inv * a.position * -1 }; }
+    inline pose to_pose(const rs2_extrinsics& a)
+    {
+        pose r{};
+        for (int i = 0; i < 3; i++) r.position[i] = a.translation[i];
+        for (int j = 0; j < 3; j++)
+            for (int i = 0; i < 3; i++)
+                r.orientation(i, j) = a.rotation[j * 3 + i];
+        return r;
+    }
+    inline rs2_extrinsics from_pose(pose a)
+    {
+        rs2_extrinsics r;
+        for (int i = 0; i < 3; i++) r.translation[i] = a.position[i];
+        for (int j = 0; j < 3; j++)
+            for (int i = 0; i < 3; i++)
+                r.rotation[j * 3 + i] = a.orientation(i, j);
+        return r;
+    }
+    inline rs2_extrinsics identity_matrix() {
+        rs2_extrinsics r;
+        // Do it the silly way to avoid infite warnings about the dangers of memset
+        for (int i = 0; i < 3; i++) r.translation[i] = 0.f;
+        for (int j = 0; j < 3; j++)
+            for (int i = 0; i < 3; i++)
+                r.rotation[j * 3 + i] = (i == j) ? 1.f : 0.f;
+        return r;
+    }
+    inline rs2_extrinsics inverse(const rs2_extrinsics& a) { auto p = to_pose(a); return from_pose(inverse(p)); }
 
     ///////////////////
     // Pixel formats //
     ///////////////////
 
+    typedef std::tuple<uint32_t, int, size_t> native_pixel_format_tuple;
+    typedef std::tuple<rs2_stream, int, rs2_format> output_tuple;
+    typedef std::tuple<platform::stream_profile_tuple, native_pixel_format_tuple, std::vector<output_tuple>> request_mapping_tuple;
+
+    struct stream_profile
+    {
+        rs2_stream stream;
+        int index;
+        uint32_t width, height, fps;
+        rs2_format format;
+    };
+
+
+    inline bool operator==(const stream_profile& a,
+        const stream_profile& b)
+    {
+        return (a.width == b.width) &&
+            (a.height == b.height) &&
+            (a.fps == b.fps) &&
+            (a.format == b.format) &&
+            (a.index == b.index);
+    }
+
+    struct stream_descriptor
+    {
+        stream_descriptor() : type(RS2_STREAM_ANY), index(0) {}
+        stream_descriptor(rs2_stream type, int index = 0) : type(type), index(index) {}
+
+        rs2_stream type;
+        int index;
+    };
+
+    struct resolution
+    {
+        uint32_t width, height;
+    };
+
+    using resolution_func = std::function<resolution(resolution res)>;
+
+    struct stream_output {
+        stream_output(stream_descriptor stream_desc_in,
+                      rs2_format format_in,
+                      resolution_func res_func = [](resolution res) {return res; })
+            : stream_desc(stream_desc_in),
+              format(format_in),
+              stream_resolution(res_func)
+        {}
+
+        stream_descriptor stream_desc;
+        rs2_format format;
+        resolution_func stream_resolution;
+    };
+
     struct pixel_format_unpacker
     {
         bool requires_processing;
-        void(*unpack)(byte * const dest[], const byte * source, int count);
-        std::vector<std::pair<rs_stream, rs_format>> outputs;
+        void(*unpack)(byte * const dest[], const byte * source, int width, int height);
+        std::vector<stream_output> outputs;
 
-        bool provides_stream(rs_stream stream) const { for (auto & o : outputs) if (o.first == stream) return true; return false; }
-        rs_format get_format(rs_stream stream) const { for (auto & o : outputs) if (o.first == stream) return o.second; throw std::logic_error("missing output"); }
+        platform::stream_profile get_uvc_profile(const stream_profile& request, uint32_t fourcc, const std::vector<platform::stream_profile>& uvc_profiles) const
+        {
+            platform::stream_profile uvc_profile{};
+            auto it = std::find_if(begin(uvc_profiles), end(uvc_profiles),
+                [&fourcc, &request, this](const platform::stream_profile& uvc_p)
+            {
+                for (auto & o : outputs)
+                {
+                    auto res = o.stream_resolution(resolution{ uvc_p.width, uvc_p.height });
+                    if (o.stream_desc.type == request.stream && o.stream_desc.index == request.index &&
+                        res.width == request.width && res.height == request.height &&
+                        uvc_p.format == fourcc && request.fps == uvc_p.fps)
+                        return true;
+                }
+                return false;
+            });
+            if (it != end(uvc_profiles))
+            {
+                uvc_profile = *it;
+            }
+            return uvc_profile;
+        }
+
+        bool satisfies(const stream_profile& request, uint32_t fourcc, const std::vector<platform::stream_profile>& uvc_profiles) const
+        {
+            auto uvc_profile = get_uvc_profile(request, fourcc, uvc_profiles);
+            return provides_stream(request, fourcc, uvc_profile) &&
+                get_format(request.stream, request.index) == request.format;
+        }
+
+        bool provides_stream(const stream_profile& request, uint32_t fourcc, const platform::stream_profile& uvc_profile) const
+        {
+            for (auto& o : outputs)
+            {
+                auto res = o.stream_resolution(resolution{ uvc_profile.width, uvc_profile.height });
+                if (o.stream_desc.type == request.stream && o.stream_desc.index == request.index &&
+                    res.width == request.width && res.height == request.height)
+                    return true;
+            }
+
+            return false;
+        }
+        rs2_format get_format(rs2_stream stream, int index) const
+        {
+            for (auto& o : outputs)
+                if (o.stream_desc.type == stream && o.stream_desc.index == index)
+                    return o.format;
+
+            throw invalid_value_exception("missing output");
+        }
+
+        operator std::vector<output_tuple>()
+        {
+            std::vector<output_tuple> tuple_outputs;
+
+            for (auto output : outputs)
+            {
+                tuple_outputs.push_back(std::make_tuple(output.stream_desc.type, output.stream_desc.index, output.format));
+            }
+            return tuple_outputs;
+        }
+
     };
 
     struct native_pixel_format
@@ -140,56 +595,80 @@ namespace rsimpl
 
         size_t get_image_size(int width, int height) const { return width * height * plane_count * bytes_per_pixel; }
 
+        operator native_pixel_format_tuple() const
+        {
+            return std::make_tuple(fourcc, plane_count, bytes_per_pixel);
+        }
     };
 
-    ////////////////////////
-    // Static camera info //
-    ////////////////////////
+    class stream_profile_interface;
 
-    struct subdevice_mode
+    struct request_mapping
     {
-        int subdevice;                          // 0, 1, 2, etc...
-        int2 native_dims;                       // Resolution advertised over UVC
-        native_pixel_format pf;                 // Pixel format advertised over UVC
-        int fps;                                // Framerate advertised over UVC
-        rs_intrinsics native_intrinsics;        // Intrinsics structure corresponding to the content of image (Note: width,height may be subset of native_dims)
-        std::vector<rs_intrinsics> rect_modes;  // Potential intrinsics of image after being rectified in software by librealsense
-        std::vector<int> pad_crop_options;      // Acceptable padding/cropping values
+        platform::stream_profile profile;
+        native_pixel_format* pf;
+        pixel_format_unpacker* unpacker;
+
+        // The request lists is there just for lookup and is not involved in object comparison
+        mutable std::vector<std::shared_ptr<stream_profile_interface>> original_requests;
+
+        operator request_mapping_tuple() const
+        {
+            return std::make_tuple(profile, *pf, *unpacker);
+        }
+
+        bool requires_processing() const { return unpacker->requires_processing; }
+
     };
 
-    struct stream_request
+    inline bool operator< (const request_mapping& first, const request_mapping& second)
     {
-        bool enabled;
-        int width, height;
-        rs_format format;
-        int fps;
-        rs_output_buffer_format output_format;
+        return request_mapping_tuple(first) < request_mapping_tuple(second);
+    }
 
-        bool contradict(stream_request req) const;
-        bool is_filled() const;
-    };
-
-    struct interstream_rule // Requires a.*field + delta == b.*field OR a.*field + delta2 == b.*field
+    inline bool operator==(const request_mapping& a,
+        const request_mapping& b)
     {
-        rs_stream a, b;
-        int stream_request::* field;
-        int delta, delta2;
-        rs_stream bigger;       // if this equals to a or b, this stream must have field value bigger then the other stream
-        bool divides, divides2; // divides = a must divide b; divides2 = b must divide a
-        bool same_format;
-    };
+        return (a.profile == b.profile) && (a.pf == b.pf) && (a.unpacker == b.unpacker);
+    }
 
-    struct supported_option
-    {
-        rs_option option;
-        double min, max, step, def;
-    };
+    class frame_interface;
 
-    struct data_polling_request
+    struct frame_holder
     {
-        bool        enabled;
-        
-        data_polling_request(): enabled(false) {};
+        frame_interface* frame;
+
+        frame_interface* operator->()
+        {
+            return frame;
+        }
+
+        operator bool() const { return frame != nullptr; }
+
+        operator frame_interface*() const { return frame; }
+
+        frame_holder(frame_interface* f)
+        {
+            frame = f;
+        }
+
+        ~frame_holder();
+
+        frame_holder(frame_holder&& other)
+            : frame(other.frame)
+        {
+            other.frame = nullptr;
+        }
+
+        frame_holder() : frame(nullptr) {}
+
+
+        frame_holder& operator=(frame_holder&& other);
+
+        frame_holder clone() const;
+    private:
+        frame_holder& operator=(const frame_holder& other) = delete;
+        frame_holder(const frame_holder& other);
     };
 
     class firmware_version
@@ -235,7 +714,7 @@ namespace rsimpl
         bool operator<(const firmware_version& other) const { return !(*this == other) && (*this <= other); }
         bool operator>=(const firmware_version& other) const { return (*this == other) || (*this > other); }
 
-        bool is_between(const firmware_version& from, const firmware_version& until)
+        bool is_between(const firmware_version& from, const firmware_version& until) const
         {
             return (from <= *this) && (*this <= until);
         }
@@ -244,100 +723,80 @@ namespace rsimpl
         {
             return string_representation.c_str();
         }
-    };
 
-    struct supported_capability
-    {
-        rs_capabilities     capability;
-        firmware_version    from;
-        firmware_version    until;
-        rs_camera_info      firmware_type;
-
-        supported_capability(rs_capabilities capability, firmware_version from, firmware_version until, rs_camera_info firmware_type = RS_CAMERA_INFO_CAMERA_FIRMWARE_VERSION)
-            : capability(capability), from(from), until(until), firmware_type(firmware_type) {}
-        
-        supported_capability(rs_capabilities capability) 
-            : capability(capability), from(), until(), firmware_type(RS_CAMERA_INFO_CAMERA_FIRMWARE_VERSION) {}
-    };
-
-    struct static_device_info
-    {
-        std::string name;                                                   // Model name of the camera
-        int stream_subdevices[RS_STREAM_NATIVE_COUNT];                      // Which subdevice is used to support each stream, or -1 if stream is unavailable
-        int data_subdevices[RS_STREAM_NATIVE_COUNT];                        // Specify whether the subdevice supports events pipe in addition to streaming, -1 if data channels are unavailable
-        std::vector<subdevice_mode> subdevice_modes;                        // A list of available modes each subdevice can be put into
-        std::vector<interstream_rule> interstream_rules;                    // Rules which constrain the set of available modes
-        stream_request presets[RS_STREAM_NATIVE_COUNT][RS_PRESET_COUNT];    // Presets available for each stream
-        std::vector<supported_option> options;
-        pose stream_poses[RS_STREAM_NATIVE_COUNT];                          // Static pose of each camera on the device
-        int num_libuvc_transfer_buffers;                                    // Number of transfer buffers to use in LibUVC backend
-        std::string firmware_version;                                       // Firmware version string
-        std::string serial;                                                 // Serial number of the camera (from USB or from SPI memory)
-        float nominal_depth_scale;                                          // Default scale
-        std::vector<supported_capability> capabilities_vector;
-        std::vector<rs_frame_metadata> supported_metadata_vector;
-        std::map<rs_camera_info, std::string> camera_info;
-
-        static_device_info();
-    };
-
-    //////////////////////////////////
-    // Runtime device configuration //
-    //////////////////////////////////
-
-    struct subdevice_mode_selection
-    {
-        subdevice_mode mode;                    // The streaming mode in which to place the hardware
-        int pad_crop;                           // The number of pixels of padding (positive values) or cropping (negative values) to apply to all four edges of the image
-        size_t unpacker_index;                  // The specific unpacker used to unpack the encoded format into the desired output formats
-        rs_output_buffer_format output_format = RS_OUTPUT_BUFFER_FORMAT_CONTINUOUS; // The output buffer format. 
-
-        subdevice_mode_selection() : mode({}), pad_crop(), unpacker_index(), output_format(RS_OUTPUT_BUFFER_FORMAT_CONTINUOUS){}
-        subdevice_mode_selection(const subdevice_mode & mode, int pad_crop, int unpacker_index) : mode(mode), pad_crop(pad_crop), unpacker_index(unpacker_index){}
-
-        const pixel_format_unpacker & get_unpacker() const {
-            if ((size_t)unpacker_index < mode.pf.unpackers.size())
-                return mode.pf.unpackers[unpacker_index];
-            throw std::runtime_error("failed to fetch an unpakcer, most likely because enable_stream was not called!");
+        operator std::string() const
+        {
+            return string_representation.c_str();
         }
-        const std::vector<std::pair<rs_stream, rs_format>> & get_outputs() const { return get_unpacker().outputs; }
-        int get_width() const { return mode.native_intrinsics.width + pad_crop * 2; }
-        int get_height() const { return mode.native_intrinsics.height + pad_crop * 2; }
-        int get_framerate() const { return mode.fps; }
-        int get_stride_x() const { return requires_processing() ? get_width() : mode.native_dims.x; }
-        int get_stride_y() const { return requires_processing() ? get_height() : mode.native_dims.y; }
-        size_t get_image_size(rs_stream stream) const;
-        bool provides_stream(rs_stream stream) const { return get_unpacker().provides_stream(stream); }
-        rs_format get_format(rs_stream stream) const { return get_unpacker().get_format(stream); }
-        void set_output_buffer_format(const rs_output_buffer_format in_output_format);
-
-        void unpack(byte * const dest[], const byte * source) const;
-        int get_unpacked_width() const;
-        int get_unpacked_height() const;
-
-        bool requires_processing() const { return (output_format == RS_OUTPUT_BUFFER_FORMAT_CONTINUOUS) || (mode.pf.unpackers[unpacker_index].requires_processing); }
-
     };
 
-    typedef void(*frame_callback_function_ptr)(rs_device * dev, rs_frame_ref * frame, void * user);
-    typedef void(*motion_callback_function_ptr)(rs_device * dev, rs_motion_data data, void * user);
-    typedef void(*timestamp_callback_function_ptr)(rs_device * dev, rs_timestamp_data data, void * user);
-    typedef void(*log_callback_function_ptr)(rs_log_severity severity, const char * message, void * user);
+    // This class is used to buffer up several writes to a structure-valued XU control, and send the entire structure all at once
+    // Additionally, it will ensure that any fields not set in a given struct will retain their original values
+    template<class T, class R, class W> struct struct_interface
+    {
+        T struct_;
+        R reader;
+        W writer;
+        bool active;
 
-    class frame_callback : public rs_frame_callback
+        struct_interface(R r, W w) : reader(r), writer(w), active(false) {}
+
+        void activate() { if (!active) { struct_ = reader(); active = true; } }
+        template<class U> double get(U T::* field) { activate(); return static_cast<double>(struct_.*field); }
+        template<class U, class V> void set(U T::* field, V value) { activate(); struct_.*field = static_cast<U>(value); }
+        void commit() { if (active) writer(struct_); }
+    };
+
+    template<class T, class R, class W>
+    std::shared_ptr<struct_interface<T, R, W>> make_struct_interface(R r, W w)
+    {
+        return std::make_shared<struct_interface<T, R, W>>(r, w);
+    }
+
+    // Provides an efficient wraparound for built-in arithmetic times, for use-cases such as a rolling timestamp
+    template <typename T, typename S>
+    class arithmetic_wraparound
+    {
+    public:
+        arithmetic_wraparound() :
+            last_input(std::numeric_limits<T>::lowest()), accumulated(0) {
+            static_assert(
+                (std::is_arithmetic<T>::value) &&
+                (std::is_arithmetic<S>::value) &&
+                (std::numeric_limits<T>::max() < std::numeric_limits<S>::max()) &&
+                (std::numeric_limits<T>::lowest() >= std::numeric_limits<S>::lowest())
+                , "Wraparound class requirements are not met");
+        }
+
+        S calc(const T input)
+        {
+            accumulated += static_cast<T>(input - last_input); // Automatically resolves wraparounds
+            last_input = input;
+            return (accumulated);
+        }
+
+        void reset() { last_input = std::numeric_limits<T>::lowest();  accumulated = 0; }
+
+    private:
+        T last_input;
+        S accumulated;
+    };
+
+    typedef void(*frame_callback_function_ptr)(rs2_frame * frame, void * user);
+
+    class frame_callback : public rs2_frame_callback
     {
         frame_callback_function_ptr fptr;
         void * user;
-        rs_device * device;
     public:
-        frame_callback() : frame_callback(nullptr, nullptr, nullptr) {}
-        frame_callback(rs_device * dev, frame_callback_function_ptr on_frame, void * user) : fptr(on_frame), user(user), device(dev) {}
+        frame_callback() : frame_callback(nullptr, nullptr) {}
+        frame_callback(frame_callback_function_ptr on_frame, void * user) : fptr(on_frame), user(user) {}
 
-        operator bool() { return fptr != nullptr; }
-        void on_frame (rs_device * dev, rs_frame_ref * frame) override { 
+        operator bool() const { return fptr != nullptr; }
+        void on_frame (rs2_frame * frame) override {
             if (fptr)
             {
-                try { fptr(dev, frame, user); } catch (...) 
+                try { fptr(frame, user); } catch (...)
                 {
                     LOG_ERROR("Received an execption from frame callback!");
                 }
@@ -346,141 +805,152 @@ namespace rsimpl
         void release() override { delete this; }
     };
 
-    class motion_events_callback : public rs_motion_callback
+    template<class T>
+    class internal_frame_callback : public rs2_frame_callback
     {
-        motion_callback_function_ptr fptr;
-        void        * user;
-        rs_device   * device;
+        T on_frame_function; //Callable of type: void(frame_interface* frame)
     public:
-        motion_events_callback() : motion_events_callback(nullptr, nullptr, nullptr) {}
-        motion_events_callback(rs_device * dev, motion_callback_function_ptr fptr, void * user) : fptr(fptr), user(user), device(dev) {}
+        explicit internal_frame_callback(T on_frame) : on_frame_function(on_frame) {}
 
-        operator bool() { return fptr != nullptr; }
-
-        void on_event(rs_motion_data data) override
+        void on_frame(rs2_frame* fref) override
         {
-            if (fptr)
-            {
-                try { fptr(device, data, user); } catch (...)
-                {
-                    LOG_ERROR("Received an execption from motion events callback!");
-                }
-            }
+            on_frame_function((frame_interface*)(fref));
         }
 
-        void release() override { }
+        void release() override { delete this; }
     };
 
-    class timestamp_events_callback : public rs_timestamp_callback
+    typedef void(*notifications_callback_function_ptr)(rs2_notification * notification, void * user);
+
+    class notifications_callback : public rs2_notifications_callback
     {
-        timestamp_callback_function_ptr fptr;
-        void        * user;
-        rs_device   * device;
+        notifications_callback_function_ptr nptr;
+        void * user;
     public:
-        timestamp_events_callback() : timestamp_events_callback(nullptr, nullptr, nullptr) {}
-        timestamp_events_callback(rs_device * dev, timestamp_callback_function_ptr fptr, void * user) : fptr(fptr), user(user), device(dev) {}
+        notifications_callback() : notifications_callback(nullptr, nullptr) {}
+        notifications_callback(notifications_callback_function_ptr on_notification, void * user) : nptr(on_notification), user(user) {}
 
-        operator bool() { return fptr != nullptr; }
-        void on_event(rs_timestamp_data data) override {
-            if (fptr)
+        operator bool() const { return nptr != nullptr; }
+        void on_notification(rs2_notification * notification) override {
+            if (nptr)
             {
-                try { fptr(device, data, user); } catch (...) 
-                {
-                    LOG_ERROR("Received an execption from timestamp events callback!");
-                }
-            }
-        }
-        void release() override { }
-    };
-
-    class log_callback : public rs_log_callback
-    {
-        log_callback_function_ptr fptr;
-        void        * user;
-    public:
-        log_callback() : log_callback(nullptr, nullptr) {}
-        log_callback(log_callback_function_ptr fptr, void * user) : fptr(fptr), user(user) {}
-
-        operator bool() { return fptr != nullptr; }
-
-        void on_event(rs_log_severity severity, const char * message) override
-        {
-            if (fptr)
-            {
-                try { fptr(severity, message, user); }
+                try { nptr(notification, user); }
                 catch (...)
                 {
-                    LOG_ERROR("Received an execption from log callback!");
+                    LOG_ERROR("Received an execption from frame callback!");
                 }
             }
         }
-
-        void release() override { }
+        void release() override { delete this; }
     };
 
-    typedef std::unique_ptr<rs_log_callback, void(*)(rs_log_callback*)> log_callback_ptr;
-    typedef std::unique_ptr<rs_motion_callback, void(*)(rs_motion_callback*)> motion_callback_ptr;
-    typedef std::unique_ptr<rs_timestamp_callback, void(*)(rs_timestamp_callback*)> timestamp_callback_ptr;
-    class frame_callback_ptr
+    typedef void(*devices_changed_function_ptr)(rs2_device_list* removed, rs2_device_list* added, void * user);
+
+    class devices_changed_callback: public rs2_devices_changed_callback
     {
-        rs_frame_callback * callback;
+        devices_changed_function_ptr nptr;
+        void * user;
     public:
-        frame_callback_ptr() : callback(nullptr) {}
-        explicit frame_callback_ptr(rs_frame_callback * callback) : callback(callback) {}
-        frame_callback_ptr(const frame_callback_ptr&) = delete;
-        frame_callback_ptr& operator =(frame_callback_ptr&& other)
-        {
-            if (callback) callback->release();
-            callback = other.callback;
-            other.callback = nullptr;
-            return *this;
+        devices_changed_callback() : devices_changed_callback(nullptr, nullptr) {}
+        devices_changed_callback(devices_changed_function_ptr on_devices_changed, void * user) : nptr(on_devices_changed), user(user) {}
+
+        operator bool() const { return nptr != nullptr; }
+        void on_devices_changed(rs2_device_list* removed, rs2_device_list* added) override {
+            if (nptr)
+            {
+                try { nptr(removed, added, user); }
+                catch (...)
+                {
+                    LOG_ERROR("Received an execption from frame callback!");
+                }
+            }
         }
-        ~frame_callback_ptr() { if (callback) callback->release(); }
-        operator rs_frame_callback *() { return callback; }
-        rs_frame_callback * operator*() { return callback; }
+        void release() override { delete this; }
     };
 
-    struct device_config
+    typedef std::unique_ptr<rs2_log_callback, void(*)(rs2_log_callback*)> log_callback_ptr;
+    typedef std::shared_ptr<rs2_frame_callback> frame_callback_ptr;
+    typedef std::shared_ptr<rs2_frame_processor_callback> frame_processor_callback_ptr;
+    typedef std::shared_ptr<rs2_notifications_callback> notifications_callback_ptr;
+    typedef std::shared_ptr<rs2_devices_changed_callback> devices_changed_callback_ptr;
+
+    using internal_callback = std::function<void(rs2_device_list* removed, rs2_device_list* added)>;
+    class devices_changed_callback_internal : public rs2_devices_changed_callback
     {
-        const static_device_info            info;
-        stream_request                      requests[RS_STREAM_NATIVE_COUNT];                       // Modified by enable/disable_stream calls
-        frame_callback_ptr                  callbacks[RS_STREAM_NATIVE_COUNT];                      // Modified by set_frame_callback calls
-        data_polling_request                data_request;                                           // Modified by enable/disable_events calls
-        motion_callback_ptr                 motion_callback{ nullptr, [](rs_motion_callback*){} };  // Modified by set_events_callback calls
-        timestamp_callback_ptr              timestamp_callback{ nullptr, [](rs_timestamp_callback*){} };
-        float depth_scale;                                              // Scale of depth values
+        internal_callback _callback;
 
-        explicit device_config(const rsimpl::static_device_info & info) : info(info), depth_scale(info.nominal_depth_scale)
+    public:
+        explicit devices_changed_callback_internal(internal_callback callback)
+            : _callback(callback)
+        {}
+
+        void on_devices_changed(rs2_device_list* removed, rs2_device_list* added) override
         {
-            for (auto & req : requests) req = rsimpl::stream_request();
+            _callback(removed , added);
         }
 
-        subdevice_mode_selection select_mode(const stream_request(&requests)[RS_STREAM_NATIVE_COUNT], int subdevice_index) const;
-        bool all_requests_filled(const stream_request(&original_requests)[RS_STREAM_NATIVE_COUNT]) const;
-        bool find_good_requests_combination(stream_request(&output_requests)[RS_STREAM_NATIVE_COUNT], std::vector<stream_request> stream_requests[RS_STREAM_NATIVE_COUNT]) const;
-        bool fill_requests(stream_request(&requests)[RS_STREAM_NATIVE_COUNT]) const;
-        void get_all_possible_requestes(std::vector<stream_request> (&stream_requests)[RS_STREAM_NATIVE_COUNT]) const;
-        std::vector<subdevice_mode_selection> select_modes(const stream_request(&requests)[RS_STREAM_NATIVE_COUNT]) const;
-        std::vector<subdevice_mode_selection> select_modes() const { return select_modes(requests); }
-        bool validate_requests(stream_request(&requests)[RS_STREAM_NATIVE_COUNT], bool throw_exception = false) const;
+        void release() override { delete this; }
     };
 
+
+    struct notification
+    {
+        notification(rs2_notification_category category, int type, rs2_log_severity severity, std::string description)
+            :category(category), type(type), severity(severity), description(description)
+        {
+            timestamp = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+            LOG_INFO(description);
+        }
+
+        rs2_notification_category category;
+        int type;
+        rs2_log_severity severity;
+        std::string description;
+        double timestamp;
+        std::string serialized_data;
+    };
+
+
+    class notification_decoder
+    {
+    public:
+        virtual ~notification_decoder() = default;
+        virtual notification decode(int value) = 0;
+    };
+
+    class notifications_processor
+    {
+    public:
+        notifications_processor();
+        ~notifications_processor();
+
+        void set_callback(notifications_callback_ptr callback);
+        notifications_callback_ptr get_callback() const;
+        void raise_notification(const notification);
+
+    private:
+        notifications_callback_ptr _callback;
+        std::mutex _callback_mutex;
+        dispatcher _dispatcher;
+    };
     ////////////////////////////////////////
     // Helper functions for library types //
     ////////////////////////////////////////
 
-    inline rs_intrinsics pad_crop_intrinsics(const rs_intrinsics & i, int pad_crop)
+    inline rs2_intrinsics pad_crop_intrinsics(const rs2_intrinsics & i, int pad_crop)
     {
-        return{ i.width + pad_crop * 2, i.height + pad_crop * 2, i.ppx + pad_crop, i.ppy + pad_crop, i.fx, i.fy, i.model, {i.coeffs[0], i.coeffs[1], i.coeffs[2], i.coeffs[3], i.coeffs[4]} };
+        return{ i.width + pad_crop * 2, i.height + pad_crop * 2, i.ppx + pad_crop, i.ppy + pad_crop,
+            i.fx, i.fy, i.model, {i.coeffs[0], i.coeffs[1], i.coeffs[2], i.coeffs[3], i.coeffs[4]} };
     }
 
-    inline rs_intrinsics scale_intrinsics(const rs_intrinsics & i, int width, int height)
+    inline rs2_intrinsics scale_intrinsics(const rs2_intrinsics & i, int width, int height)
     {
-        const float sx = (float)width / i.width, sy = (float)height / i.height;
-        return{ width, height, i.ppx*sx, i.ppy*sy, i.fx*sx, i.fy*sy, i.model, {i.coeffs[0], i.coeffs[1], i.coeffs[2], i.coeffs[3], i.coeffs[4]} };
+        const float sx = static_cast<float>(width) / i.width, sy = static_cast<float>(height) / i.height;
+        return{ width, height, i.ppx*sx, i.ppy*sy, i.fx*sx, i.fy*sy, i.model,
+                {i.coeffs[0], i.coeffs[1], i.coeffs[2], i.coeffs[3], i.coeffs[4]} };
     }
 
-    inline bool operator == (const rs_intrinsics & a, const rs_intrinsics & b) { return std::memcmp(&a, &b, sizeof(a)) == 0; }
+    inline bool operator == (const rs2_intrinsics & a, const rs2_intrinsics & b) { return std::memcmp(&a, &b, sizeof(a)) == 0; }
 
     inline uint32_t pack(uint8_t c0, uint8_t c1, uint8_t c2, uint8_t c3)
     {
@@ -528,11 +998,12 @@ namespace rsimpl
         {
              if (item < buffer || item >= buffer + C)
             {
-                throw std::runtime_error("Trying to return item to a heap that didn't allocate it!");
+                throw invalid_value_exception("Trying to return item to a heap that didn't allocate it!");
             }
             auto i = item - buffer;
+            auto old_value = std::move(buffer[i]);
             buffer[i] = std::move(T());
-            
+
             {
                 std::unique_lock<std::mutex> lock(mutex);
 
@@ -559,13 +1030,211 @@ namespace rsimpl
 
             const auto ready = [this]()
             {
-                return size == 0;
+                return is_empty();
             };
             if (!ready() && !cv.wait_for(lock, std::chrono::hours(1000), ready)) // for some reason passing std::chrono::duration::max makes it return instantly
             {
-                throw std::runtime_error("Could not flush one of the user controlled objects!");
+                throw invalid_value_exception("Could not flush one of the user controlled objects!");
             }
         }
+
+        bool is_empty() const { return size == 0; }
+        int get_size() const { return size; }
+    };
+
+    struct uvc_device_info
+    {
+        std::string id = ""; // to distinguish between different pins of the same device
+        uint16_t vid;
+        uint16_t pid;
+        uint16_t mi;
+        std::string unique_id;
+        std::string device_path;
+
+        operator std::string()
+        {
+            std::stringstream s;
+            s << "id- " << id <<
+                "\nvid- " << std::hex << vid <<
+                "\npid- " << std::hex << pid <<
+                "\nmi- " << mi <<
+                "\nunique_id- " << unique_id <<
+                "\npath- " << device_path;
+
+            return s.str();
+        }
+    };
+
+    inline bool operator==(const uvc_device_info& a,
+                    const uvc_device_info& b)
+    {
+        return (a.vid == b.vid) &&
+               (a.pid == b.pid) &&
+               (a.mi == b.mi) &&
+               (a.unique_id == b.unique_id) &&
+               (a.id == b.id) &&
+               (a.device_path == b.device_path);
+    }
+
+    struct usb_device_info
+    {
+        std::string id;
+
+        uint16_t vid;
+        uint16_t pid;
+        uint16_t mi;
+        std::string unique_id;
+
+        operator std::string()
+        {
+            std::stringstream s;
+
+            s << "vid- " << std::hex << vid <<
+                "\npid- " << std::hex << pid <<
+                "\nmi- " << mi <<
+                "\nunique_id- " << unique_id;
+
+            return s.str();
+        }
+    };
+
+    inline bool operator==(const usb_device_info& a,
+        const usb_device_info& b)
+    {
+        return  (a.id == b.id) &&
+            (a.vid == b.vid) &&
+            (a.pid == b.pid) &&
+            (a.mi == b.mi) &&
+            (a.unique_id == b.unique_id);
+    }
+
+    struct hid_device_info
+    {
+        std::string id;
+        std::string vid;
+        std::string pid;
+        std::string unique_id;
+        std::string device_path;
+
+        operator std::string()
+        {
+            std::stringstream s;
+            s << "id- " << id <<
+                "\nvid- " << std::hex << vid <<
+                "\npid- " << std::hex << pid <<
+                "\nunique_id- " << unique_id <<
+                "\npath- " << device_path;
+
+            return s.str();
+        }
+    };
+
+    inline bool operator==(const hid_device_info& a,
+        const hid_device_info& b)
+    {
+        return  (a.id == b.id) &&
+            (a.vid == b.vid) &&
+            (a.pid == b.pid) &&
+            (a.unique_id == b.unique_id) &&
+            (a.device_path == b.device_path);
+    }
+
+
+    struct devices_data
+    {
+        devices_data(std::vector<uvc_device_info>  uvc_devices, std::vector<usb_device_info> usb_devices, std::vector<hid_device_info> hid_devices)
+            :_uvc_devices(uvc_devices), _usb_devices(usb_devices), _hid_devices(hid_devices) {}
+
+        devices_data(std::vector<usb_device_info> usb_devices)
+            :_usb_devices(usb_devices) {}
+
+        devices_data(std::vector<uvc_device_info> uvc_devices, std::vector<usb_device_info> usb_devices)
+            :_uvc_devices(uvc_devices), _usb_devices(usb_devices) {}
+
+        std::vector<uvc_device_info> _uvc_devices;
+        std::vector<usb_device_info> _usb_devices;
+        std::vector<hid_device_info> _hid_devices;
+
+        bool operator == (const devices_data& other)
+        {
+            return !list_changed(_uvc_devices, other._uvc_devices) &&
+                !list_changed(_hid_devices, other._hid_devices);
+        }
+
+        operator std::string()
+        {
+            std::string s;
+            s = _uvc_devices.size()>0 ? "uvc devices:\n" : "";
+            for (auto uvc : _uvc_devices)
+            {
+                s += uvc;
+                s += "\n\n";
+            }
+
+            s += _usb_devices.size()>0 ? "usb devices:\n" : "";
+            for (auto usb : _usb_devices)
+            {
+                s += usb;
+                s += "\n\n";
+            }
+
+            s += _hid_devices.size()>0 ? "hid devices: \n" : "";
+            for (auto hid : _hid_devices)
+            {
+                s += hid;
+                s += "\n\n";
+            }
+            return s;
+        }
+    };
+
+
+    typedef std::function<void(devices_data old, devices_data curr)> device_changed_callback;
+    struct callback_invocation
+    {
+        std::chrono::high_resolution_clock::time_point started;
+        std::chrono::high_resolution_clock::time_point ended;
+    };
+
+    typedef librealsense::small_heap<callback_invocation, 1> callbacks_heap;
+
+    struct callback_invocation_holder
+    {
+        callback_invocation_holder() : invocation(nullptr), owner(nullptr) {}
+        callback_invocation_holder(const callback_invocation_holder&) = delete;
+        callback_invocation_holder& operator=(const callback_invocation_holder&) = delete;
+
+        callback_invocation_holder(callback_invocation_holder&& other)
+            : invocation(other.invocation), owner(other.owner)
+        {
+            other.invocation = nullptr;
+        }
+
+        callback_invocation_holder(callback_invocation* invocation, callbacks_heap* owner)
+            : invocation(invocation), owner(owner)
+        { }
+
+        ~callback_invocation_holder()
+        {
+            if (invocation) owner->deallocate(invocation);
+        }
+
+        callback_invocation_holder& operator=(callback_invocation_holder&& other)
+        {
+            invocation = other.invocation;
+            owner = other.owner;
+            other.invocation = nullptr;
+            return *this;
+        }
+
+        operator bool()
+        {
+            return invocation != nullptr;
+        }
+
+    private:
+        callback_invocation* invocation;
+        callbacks_heap* owner;
     };
 
     class frame_continuation
@@ -579,7 +1248,7 @@ namespace rsimpl
         frame_continuation() : continuation([]() {}) {}
 
         explicit frame_continuation(std::function<void()> continuation, const void* protected_data) : continuation(continuation), protected_data(protected_data) {}
-        
+
 
         frame_continuation(frame_continuation && other) : continuation(std::move(other.continuation)), protected_data(other.protected_data)
         {
@@ -620,25 +1289,361 @@ namespace rsimpl
     };
 
     // this class is a convinience wrapper for intrinsics / extrinsics validation methods
-    class calibration_validator 
+    class calibration_validator
     {
     public:
-        calibration_validator(std::function<bool(rs_stream, rs_stream)> extrinsic_validator,
-                              std::function<bool(rs_stream)>            intrinsic_validator);
+        calibration_validator(std::function<bool(rs2_stream, rs2_stream)> extrinsic_validator,
+                              std::function<bool(rs2_stream)>            intrinsic_validator);
         calibration_validator();
 
-        bool validate_extrinsics(rs_stream from_stream, rs_stream to_stream) const;
-        bool validate_intrinsics(rs_stream stream) const;
+        bool validate_extrinsics(rs2_stream from_stream, rs2_stream to_stream) const;
+        bool validate_intrinsics(rs2_stream stream) const;
 
     private:
-        std::function<bool(rs_stream from_stream, rs_stream to_stream)> extrinsic_validator;
-        std::function<bool(rs_stream stream)> intrinsic_validator;
+        std::function<bool(rs2_stream from_stream, rs2_stream to_stream)> extrinsic_validator;
+        std::function<bool(rs2_stream stream)> intrinsic_validator;
     };
 
     inline bool check_not_all_zeros(std::vector<byte> data)
     {
         return std::find_if(data.begin(), data.end(), [](byte b){ return b!=0; }) != data.end();
     }
+
+    std::string datetime_string();
+
+    bool file_exists(const char* filename);
+
+    ///////////////////////////////////////////
+    // Extrinsic auxillary routines routines //
+    ///////////////////////////////////////////
+    float3x3 calc_rotation_from_rodrigues_angles(const std::vector<double> rot);
+    // Auxillary function that calculates standard 32bit CRC code. used in verificaiton
+    uint32_t calc_crc32(const uint8_t *buf, size_t bufsize);
+
+
+    class polling_device_watcher: public librealsense::platform::device_watcher
+    {
+    public:
+        polling_device_watcher(const platform::backend* backend_ref):
+            _backend(backend_ref),_active_object([this](dispatcher::cancellable_timer cancellable_timer)
+        {
+            polling(cancellable_timer);
+        }), _devices_data()
+        {
+        }
+
+        ~polling_device_watcher()
+        {
+            stop();
+        }
+
+        void polling(dispatcher::cancellable_timer cancellable_timer)
+        {
+            if(cancellable_timer.try_sleep(5000))
+            {
+                platform::backend_device_group curr(_backend->query_uvc_devices(), _backend->query_usb_devices(), _backend->query_hid_devices());
+                if(list_changed(_devices_data.uvc_devices, curr.uvc_devices ) ||
+                   list_changed(_devices_data.usb_devices, curr.usb_devices ) ||
+                   list_changed(_devices_data.hid_devices, curr.hid_devices ))
+                {
+                    callback_invocation_holder callback = { _callback_inflight.allocate(), &_callback_inflight };
+                    if(callback)
+                    {
+                        _callback(_devices_data, curr);
+                        _devices_data = curr;
+                    }
+                }
+            }
+        }
+
+        void start(platform::device_changed_callback callback) override
+        {
+            stop();
+            _callback = std::move(callback);
+            _devices_data = {   _backend->query_uvc_devices(),
+                                _backend->query_usb_devices(),
+                                _backend->query_hid_devices() };
+
+            _active_object.start();
+        }
+
+        void stop() override
+        {
+            _active_object.stop();
+
+            _callback_inflight.wait_until_empty();
+        }
+
+    private:
+        active_object<> _active_object;
+
+        callbacks_heap _callback_inflight;
+        const platform::backend* _backend;
+
+        platform::backend_device_group _devices_data;
+        platform::device_changed_callback _callback;
+
+    };
+
+
+    template<typename HostingClass, typename... Args>
+    class signal
+    {
+        friend HostingClass;
+    public:
+        signal()
+        {
+        }
+
+        signal(signal&& other)
+        {
+            std::lock_guard<std::mutex> locker(other.m_mutex);
+            m_subscribers = std::move(other.m_subscribers);
+
+            other.m_subscribers.clear();
+        }
+
+        signal& operator=(signal&& other)
+        {
+            std::lock_guard<std::mutex> locker(other.m_mutex);
+            m_subscribers = std::move(other.m_subscribers);
+
+            other.m_subscribers.clear();
+            return *this;
+        }
+
+        int subscribe(const std::function<void(Args...)>& func)
+        {
+            std::lock_guard<std::mutex> locker(m_mutex);
+
+            int token = -1;
+            for (int i = 0; i < (std::numeric_limits<int>::max)(); i++)
+            {
+                if (m_subscribers.find(i) == m_subscribers.end())
+                {
+                    token = i;
+                    break;
+                }
+            }
+
+            if (token != -1)
+            {
+                m_subscribers.emplace(token, func);
+            }
+
+            return token;
+        }
+
+        bool unsubscribe(int token)
+        {
+            std::lock_guard<std::mutex> locker(m_mutex);
+
+            bool retVal = false;
+            typename std::map<int, std::function<void(Args...)>>::iterator it = m_subscribers.find(token);
+            if (it != m_subscribers.end())
+            {
+                m_subscribers.erase(token);
+                retVal = true;
+            }
+
+            return retVal;
+        }
+
+        int operator+=(const std::function<void(Args...)>& func)
+        {
+            return subscribe(func);
+        }
+
+        bool operator-=(int token)
+        {
+            return unsubscribe(token);
+        }
+
+    private:
+        signal(const signal& other);            // non construction-copyable
+        signal& operator=(const signal&);       // non copyable
+
+        bool raise(Args... args)
+        {
+            std::vector<std::function<void(Args...)>> functions;
+            bool retVal = false;
+
+            std::unique_lock<std::mutex> locker(m_mutex);
+            if (m_subscribers.size() > 0)
+            {
+                typename std::map<int, std::function<void(Args...)>>::iterator it = m_subscribers.begin();
+                while (it != m_subscribers.end())
+                {
+                    functions.emplace_back(it->second);
+                    ++it;
+                }
+            }
+            locker.unlock();
+
+            if (functions.size() > 0)
+            {
+                for (auto func : functions)
+                {
+                    func(std::forward<Args>(args)...);
+                }
+
+                retVal = true;
+            }
+
+            return retVal;
+        }
+
+        bool operator()(Args... args)
+        {
+            return raise(std::forward<Args>(args)...);
+        }
+
+        std::mutex m_mutex;
+        std::map<int, std::function<void(Args...)>> m_subscribers;
+    };
+
+    template <typename T>
+    class optional_value
+    {
+    public:
+        optional_value() : _valid(false) {}
+        explicit optional_value(const T& v) : _valid(true), _value(v) {}
+
+        operator bool() const
+        {
+            return has_value();
+        }
+        bool has_value() const
+        {
+            return _valid;
+        }
+
+        T& operator=(const T& v)
+        {
+            _valid = true;
+            _value = v;
+            return _value;
+        }
+
+        T& value() &
+        {
+            if (!_valid) throw std::runtime_error("bad optional access");
+            return _value;
+        }
+
+        T&& value() &&
+        {
+            if (!_valid) throw std::runtime_error("bad optional access");
+            return std::move(_value);
+        }
+
+        const T* operator->() const
+        {
+            return &_value;
+        }
+        T* operator->()
+        {
+            return &_value;
+        }
+        const T& operator*() const&
+        {
+            return _value;
+        }
+        T& operator*() &
+        {
+            return _value;
+        }
+        T&& operator*() &&
+        {
+            return std::move(_value);
+        }
+    private:
+        bool _valid;
+        T _value;
+    };
 }
+
+namespace std {
+
+    template <>
+    struct hash<librealsense::stream_profile>
+    {
+        size_t operator()(const librealsense::stream_profile& k) const
+        {
+            using std::hash;
+
+            return (hash<uint32_t>()(k.height))
+                ^ (hash<uint32_t>()(k.width))
+                ^ (hash<uint32_t>()(k.fps))
+                ^ (hash<uint32_t>()(k.format))
+                ^ (hash<uint32_t>()(k.stream));
+        }
+    };
+
+    template <>
+    struct hash<librealsense::platform::stream_profile>
+    {
+        size_t operator()(const librealsense::platform::stream_profile& k) const
+        {
+            using std::hash;
+
+            return (hash<uint32_t>()(k.height))
+                ^ (hash<uint32_t>()(k.width))
+                ^ (hash<uint32_t>()(k.fps))
+                ^ (hash<uint32_t>()(k.format));
+        }
+    };
+
+    template <>
+    struct hash<librealsense::request_mapping>
+    {
+        size_t operator()(const librealsense::request_mapping& k) const
+        {
+            using std::hash;
+
+            return (hash<librealsense::platform::stream_profile>()(k.profile))
+                ^ (hash<librealsense::pixel_format_unpacker*>()(k.unpacker))
+                ^ (hash<librealsense::native_pixel_format*>()(k.pf));
+        }
+    };
+}
+
+template<class T>
+bool contains(const T& first, const T& second)
+{
+    return first == second;
+}
+
+template<class T>
+std::vector<std::shared_ptr<T>> subtract_sets(const std::vector<std::shared_ptr<T>>& first, const std::vector<std::shared_ptr<T>>& second)
+{
+    std::vector<std::shared_ptr<T>> results;
+    std::for_each(first.begin(), first.end(), [&](std::shared_ptr<T> data)
+    {
+        if (std::find_if(second.begin(), second.end(), [&](std::shared_ptr<T> new_dev) {
+            return contains(data, new_dev);
+        }) == second.end())
+        {
+            results.push_back(data);
+        }
+    });
+    return results;
+}
+
+    enum res_type {
+        low_resolution,
+        medium_resolution,
+        high_resolution
+    };
+
+    inline res_type get_res_type(uint32_t width, uint32_t height)
+    {
+        if (width == 640)
+            return res_type::medium_resolution;
+        else if (width < 640)
+            return res_type::low_resolution;
+
+        return res_type::high_resolution;
+    }
 
 #endif

@@ -1,6 +1,8 @@
 bin/
 lib/
 
+ubuntu-xenial/
+
 # CMake
 build/
 
@@ -24,18 +26,23 @@ librealsense.xc/build
 *~
 *.a
 *.o
+*.so
 *.pyc
 *.class
 
 local_ignore/
 
+#Visual Studio Project
+.vs/*
+
+#Clion Project
+.idea/*
+
 # QTCreator Project
 /.qmake.cache
 /.qmake.stash
-*.pro.user
-*.pro.user.*
-*.qbs.user
-*.qbs.user.*
+*.user
+*.user.*
 *.moc
 moc_*.cpp
 qrc_*.cpp
@@ -44,10 +51,34 @@ Makefile*
 *-build-*
 librealsense-log.txt
 
-*.vcxproj.user
+*.pyproj
 *.orig
 *.psess
 *.vspx
 *.vsp
 *.bak
 *.bin
+*.suo
+*.tlog
+*.obj
+*.ilk
+*.pdb
+*.exp
+*.log
+*.stamp
+*.depend
+*.vcxproj
+*.exe
+*.cache
+*.lib
+*.filters
+*.db
+*.opendb
+*.rule
+*.check_cache
+*.dll
+*.list
+*.json
+*.ini
+*.cxx
+

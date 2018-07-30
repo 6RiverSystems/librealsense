@@ -1,249 +1,598 @@
-#include <cmath>
+// License: Apache 2.0. See LICENSE file in root directory.
+// Copyright(c) 2015 Intel Corporation. All Rights Reserved.
+
+#include "proc/synthetic-stream.h"
 #include "sync.h"
+#include "environment.h"
 
-using namespace rsimpl;
-
-syncronizing_archive::syncronizing_archive(const std::vector<subdevice_mode_selection> & selection,
-    rs_stream key_stream,
-    std::atomic<uint32_t>* max_size,
-    std::atomic<uint32_t>* event_queue_size,
-    std::atomic<uint32_t>* events_timeout,
-    std::chrono::high_resolution_clock::time_point capture_started)
-    : frame_archive(selection, max_size, capture_started), key_stream(key_stream),
-    ts_corrector(event_queue_size, events_timeout)
+namespace librealsense
 {
-    // Enumerate all streams we need to keep synchronized with the key stream
-    for(auto s : {RS_STREAM_DEPTH, RS_STREAM_INFRARED, RS_STREAM_INFRARED2, RS_STREAM_COLOR, RS_STREAM_FISHEYE})
+    const int MAX_GAP = 1000;
+
+    std::string frame_to_string(frame_holder& f)
     {
-        if(is_stream_enabled(s) && s != key_stream) other_streams.push_back(s);
-    }
-
-    // Allocate an empty image for each stream, and move it to the frontbuffer
-    // This allows us to assume that get_frame_data/get_frame_timestamp always return valid data
-    alloc_frame(key_stream, frame_additional_data(), true);
-    frontbuffer.place_frame(key_stream, std::move(backbuffer[key_stream]));
-    for(auto s : other_streams)
-    {
-        alloc_frame(s, frame_additional_data(), true);
-        frontbuffer.place_frame(s, std::move(backbuffer[s]));
-    }
-}
-
-const byte * syncronizing_archive::get_frame_data(rs_stream stream) const
-{
-    return frontbuffer.get_frame_data(stream);
-}
-
-double syncronizing_archive::get_frame_timestamp(rs_stream stream) const
-{
-    return frontbuffer.get_frame_timestamp(stream);
-}
-
-int syncronizing_archive::get_frame_bpp(rs_stream stream) const
-{
-    return frontbuffer.get_frame_bpp(stream);
-}
-
-frame_archive::frameset* syncronizing_archive::clone_frontbuffer()
-{
-    return clone_frameset(&frontbuffer);
-}
-
-double syncronizing_archive::get_frame_metadata(rs_stream stream, rs_frame_metadata frame_metadata) const
-{
-    return frontbuffer.get_frame_metadata(stream, frame_metadata);
-}
-
-bool syncronizing_archive::supports_frame_metadata(rs_stream stream, rs_frame_metadata frame_metadata) const
-{
-    return frontbuffer.supports_frame_metadata(stream, frame_metadata);
-}
-
-unsigned long long rsimpl::syncronizing_archive::get_frame_number(rs_stream stream) const
-{
-    return frontbuffer.get_frame_number(stream);
-}
-
-long long syncronizing_archive::get_frame_system_time(rs_stream stream) const
-{
-    return frontbuffer.get_frame_system_time(stream);
-}
-
-// Block until the next coherent frameset is available
-void syncronizing_archive::wait_for_frames()
-{
-    std::unique_lock<std::recursive_mutex> lock(mutex);
-    const auto ready = [this]() { return !frames[key_stream].empty(); };
-    if(!ready() && !cv.wait_for(lock, std::chrono::seconds(5), ready)) throw std::runtime_error("Timeout waiting for frames.");
-    get_next_frames();
-}
-
-// If a coherent frameset is available, obtain it and return true, otherwise return false immediately
-bool syncronizing_archive::poll_for_frames()
-{
-    // TODO: Implement a user-specifiable timeout for how long to wait before returning false?
-    std::unique_lock<std::recursive_mutex> lock(mutex);
-    if(frames[key_stream].empty()) return false;
-    get_next_frames();
-    return true;
-}
-
-frame_archive::frameset* syncronizing_archive::wait_for_frames_safe()
-{
-    frameset * result = nullptr;
-    do
-    {
-        std::unique_lock<std::recursive_mutex> lock(mutex);
-        const auto ready = [this]() { return !frames[key_stream].empty(); };
-        if (!ready() && !cv.wait_for(lock, std::chrono::seconds(5), ready)) throw std::runtime_error("Timeout waiting for frames.");
-        get_next_frames();
-        result = clone_frontbuffer();
-    } 
-    while (!result);
-    return result;
-}
-
-bool syncronizing_archive::poll_for_frames_safe(frameset** frameset)
-{
-    // TODO: Implement a user-specifiable timeout for how long to wait before returning false?
-    std::unique_lock<std::recursive_mutex> lock(mutex);
-    if (frames[key_stream].empty()) return false;
-    get_next_frames();
-    auto result = clone_frontbuffer();
-    if (result)
-    {
-        *frameset = result;
-        return true;
-    }
-    return false;
-}
-
-// Move frames from the queues to the frontbuffers to form the next coherent frameset
-void syncronizing_archive::get_next_frames()
-{
-    // Always dequeue a frame from the key stream
-    dequeue_frame(key_stream);
-
-    // Dequeue from other streams if the new frame is closer to the timestamp of the key stream than the old frame
-    for(auto s : other_streams)
-    {
-        if (frames[s].empty())
-            continue;
-
-        auto timestamp_of_new_frame = frames[s].front().additional_data.timestamp;
-        auto timestamp_of_old_frame = frontbuffer.get_frame_timestamp(s);
-        auto timestamp_of_key_stream = frontbuffer.get_frame_timestamp(key_stream);
-        if ((timestamp_of_new_frame > timestamp_of_key_stream) ||
-            (std::fabs(timestamp_of_new_frame - timestamp_of_key_stream) <= std::fabs(timestamp_of_old_frame - timestamp_of_key_stream)))
+        std::stringstream s;
+        auto composite = dynamic_cast<composite_frame*>(f.frame);
+        if(composite)
         {
-            dequeue_frame(s);
-        }
-    }
-}
-
-// Move a frame from the backbuffer to the back of the queue
-void syncronizing_archive::commit_frame(rs_stream stream)
-{
-    std::unique_lock<std::recursive_mutex> lock(mutex);
-    frames[stream].push_back(std::move(backbuffer[stream]));
-    cull_frames();
-    lock.unlock();
-    if(!frames[key_stream].empty()) cv.notify_one();
-}
-
-void syncronizing_archive::flush()
-{
-    frontbuffer.cleanup(); // frontbuffer also holds frame references, since its content is publicly available through get_frame_data
-    frame_archive::flush();
-}
-
-void syncronizing_archive::correct_timestamp(rs_stream stream)
-{
-    if (is_stream_enabled(stream))
-        {
-            ts_corrector.correct_timestamp(backbuffer[stream], stream);
-        }
-}
-
-void syncronizing_archive::on_timestamp(rs_timestamp_data data)
-{
-    ts_corrector.on_timestamp(data);
-}
-
-int syncronizing_archive::get_frame_stride(rs_stream stream) const
-{
-    return frontbuffer.get_frame_stride(stream);
-}
-
-// Discard all frames which are older than the most recent coherent frameset
-void syncronizing_archive::cull_frames()
-{
-    // Never keep more than four frames around in any given stream, regardless of timestamps
-    for(auto s : {RS_STREAM_DEPTH, RS_STREAM_COLOR, RS_STREAM_INFRARED, RS_STREAM_INFRARED2, RS_STREAM_FISHEYE})
-    {
-        while(frames[s].size() > 4)
-        {
-            discard_frame(s);
-        }
-    }
-
-    // Cannot do any culling unless at least one frame is enqueued for each enabled stream    
-    if(frames[key_stream].empty()) return;
-    for(auto s : other_streams) if(frames[s].empty()) return;
-
-    // We can discard frames from the key stream if we have at least two and the latter is closer to the most recent frame of all other streams than the former
-    while(true)
-    {
-        if(frames[key_stream].size() < 2) break;
-        const double t0 = frames[key_stream][0].additional_data.timestamp, t1 = frames[key_stream][1].additional_data.timestamp;
-
-        bool valid_to_skip = true;
-        for(auto s : other_streams)
-        {
-            if (std::fabs(t0 - frames[s].back().additional_data.timestamp) < std::fabs(t1 - frames[s].back().additional_data.timestamp))
+            for (int i = 0; i < composite->get_embedded_frames_count(); i++)
             {
-                valid_to_skip = false;
-                break;
+                auto frame = composite->get_frame(i);
+                s << frame->get_stream()->get_stream_type()<<" "<<frame->get_frame_number()<<" "<<std::fixed << frame->get_frame_timestamp()<<" ";
             }
         }
-        if(!valid_to_skip) break;
-
-        discard_frame(key_stream);
+        else
+        {
+             s<<f->get_stream()->get_stream_type()<<" "<<f->get_frame_number()<<" "<<std::fixed <<(double)f->get_frame_timestamp()<<" ";
+        }
+        return s.str();
     }
 
-    // We can discard frames for other streams if we have at least two and the latter is closer to the next key stream frame than the former
-    for(auto s : other_streams)
-    {
-        while(true)
-        {
-            if(frames[s].size() < 2) break;
-            const double t0 = frames[s][0].additional_data.timestamp, t1 = frames[s][1].additional_data.timestamp;
+    matcher::matcher(std::vector<stream_id> streams_id)
+        : _streams_id(streams_id){}
 
-            if (std::fabs(t0 - frames[key_stream].front().additional_data.timestamp) < std::fabs(t1 - frames[key_stream].front().additional_data.timestamp)) break;
-            discard_frame(s);
+    void matcher::sync(frame_holder f, syncronization_environment env)
+    {
+        auto cb = begin_callback();
+        _callback(std::move(f), env);
+    }
+
+    void matcher::set_callback(sync_callback f)
+    {
+        _callback = f;
+    }
+
+    callback_invocation_holder matcher::begin_callback()
+    {
+        return{ _callback_inflight.allocate(), &_callback_inflight };
+    }
+
+    std::string matcher::get_name() const
+    {
+        return _name;
+    }
+
+    bool matcher::get_active() const
+    {
+        return _active;
+    }
+
+    void matcher::set_active(const bool active)
+    {
+        _active = active;
+    }
+
+    const std::vector<stream_id>& matcher::get_streams() const
+    {
+        return _streams_id;
+    }
+
+    const std::vector<rs2_stream>& matcher::get_streams_types() const
+    {
+        return _streams_type;
+    }
+
+    matcher::~matcher()
+    {
+        _callback_inflight.stop_allocation();
+
+        auto callbacks_inflight = _callback_inflight.get_size();
+        if (callbacks_inflight > 0)
+        {
+            LOG_WARNING(callbacks_inflight << " callbacks are still running on some other threads. Waiting until all callbacks return...");
+        }
+        // wait until user is done with all the stuff he chose to borrow
+        _callback_inflight.wait_until_empty();
+    }
+
+    identity_matcher::identity_matcher(stream_id stream, rs2_stream stream_type)
+        :matcher({stream})
+    {
+        _streams_type = {stream_type};
+        _name = "I " + std::string(rs2_stream_to_string(stream_type));
+    }
+
+    void identity_matcher::dispatch(frame_holder f, syncronization_environment env)
+    {
+        std::stringstream s;
+        s <<_name<<"--> "<< f->get_stream()->get_stream_type() << " " << f->get_frame_number() << ", "<<std::fixed<< f->get_frame_timestamp()<<"\n";
+        LOG_DEBUG(s.str());
+
+        sync(std::move(f), env);
+    }
+
+    std::string create_composite_name(const std::vector<std::shared_ptr<matcher>>& matchers, const std::string& name)
+    {
+        std::stringstream s;
+        s<<"("<<name;
+
+        for (auto&& matcher : matchers)
+        {
+            s<<matcher->get_name()<<" ";
+        }
+        s<<")";
+        return s.str();
+    }
+
+    composite_matcher::composite_matcher(std::vector<std::shared_ptr<matcher>> matchers, std::string name)
+    {
+        for (auto&& matcher : matchers)
+        {
+            for (auto&& stream : matcher->get_streams())
+            {
+                matcher->set_callback([&](frame_holder f, syncronization_environment env)
+                {
+                    sync(std::move(f), env);
+                });
+                _matchers[stream] = matcher;
+                _streams_id.push_back(stream);
+            }
+            for (auto&& stream : matcher->get_streams_types())
+            {
+                _streams_type.push_back(stream);
+            }
+        }
+
+        _name = create_composite_name(matchers, name);
+    }
+
+    void composite_matcher::dispatch(frame_holder f, syncronization_environment env)
+    {
+        std::stringstream s;
+        s <<"DISPATCH "<<_name<<"--> "<< frame_to_string(f) <<"\n";
+        LOG_DEBUG(s.str());
+
+        clean_inactive_streams(f);
+        auto matcher = find_matcher(f);
+        update_last_arrived(f, matcher.get());
+        matcher->dispatch(std::move(f), env);
+    }
+
+    std::shared_ptr<matcher> composite_matcher::find_matcher(const frame_holder& frame)
+    {
+        std::shared_ptr<matcher> matcher;
+        auto stream_id = frame.frame->get_stream()->get_unique_id();
+        auto stream_type = frame.frame->get_stream()->get_stream_type();
+
+        auto sensor = frame.frame->get_sensor().get(); //TODO: Potential deadlock if get_sensor() gets a hold of the last reference of that sensor
+
+        auto dev_exist = false;
+
+        if (sensor)
+        {
+
+            const device_interface* dev = nullptr;
+            try
+            {
+                dev = sensor->get_device().shared_from_this().get();
+            }
+            catch (const std::bad_weak_ptr&)
+            {
+                LOG_WARNING("Device destroyed");
+            }
+            if (dev)
+            {
+                dev_exist = true;
+                matcher = _matchers[stream_id];
+                if (!matcher)
+                {
+                    matcher = dev->create_matcher(frame);
+
+
+                    matcher->set_callback([&](frame_holder f, syncronization_environment env)
+                    {
+                        sync(std::move(f), env);
+                    });
+
+                    for (auto stream : matcher->get_streams())
+                    {
+                        if (_matchers[stream])
+                        {
+                            _frames_queue.erase(_matchers[stream].get());
+                        }
+                        _matchers[stream] = matcher;
+                        _streams_id.push_back(stream);
+
+                    }
+                    for (auto stream : matcher->get_streams_types())
+                    {
+                        _streams_type.push_back(stream);
+                    }
+
+                    if (std::find(_streams_type.begin(), _streams_type.end(), stream_type) == _streams_type.end())
+                    {
+                        LOG_ERROR("Stream matcher not found! stream=" << rs2_stream_to_string(stream_type));
+                    }
+                }
+
+                else if(!matcher->get_active())
+                {
+
+                     matcher->set_active(true);
+                     _frames_queue[matcher.get()].start();
+                }
+            }
+        }
+
+        if(!dev_exist)
+        {
+            matcher = _matchers[stream_id];
+            // We don't know what device this frame came from, so just store it under device NULL with ID matcher
+            if (!matcher)
+            {
+                if (_matchers[stream_id])
+                {
+                    _frames_queue.erase(_matchers[stream_id].get());
+                }
+                 _matchers[stream_id] = std::make_shared<identity_matcher>(stream_id, stream_type);
+                _streams_id.push_back(stream_id);
+                _streams_type.push_back(stream_type);
+                matcher = _matchers[stream_id];
+
+                matcher->set_callback([&](frame_holder f, syncronization_environment env)
+                {
+                    sync(std::move(f), env);
+                });
+            }
+        }
+        return matcher;
+    }
+
+
+    std::string composite_matcher::frames_to_string(std::vector<librealsense::matcher*> matchers)
+    {
+        std::string str;
+        for (auto m : matchers)
+        {
+            frame_holder* f;
+            if(_frames_queue[m].peek(&f))
+                str += frame_to_string(*f);
+        }
+        return str;
+    }
+
+    void composite_matcher::sync(frame_holder f, syncronization_environment env)
+    {
+        std::stringstream s;
+        s <<"SYNC "<<_name<<"--> "<< frame_to_string(f)<<"\n";
+        LOG_DEBUG(s.str());
+
+        update_next_expected(f);
+        auto matcher = find_matcher(f);
+        _frames_queue[matcher.get()].enqueue(std::move(f));
+
+        std::vector<frame_holder*> frames_arrived;
+        std::vector<librealsense::matcher*> frames_arrived_matchers;
+        std::vector<librealsense::matcher*> synced_frames;
+        std::vector<librealsense::matcher*> missing_streams;
+
+        do
+        {
+            std::stringstream s;
+            auto old_frames = false;
+
+            synced_frames.clear();
+            missing_streams.clear();
+            frames_arrived_matchers.clear();
+            frames_arrived.clear();
+
+
+            for (auto s = _frames_queue.begin(); s != _frames_queue.end(); s++)
+            {
+                frame_holder* f;
+                if (s->second.peek(&f))
+                {
+                    frames_arrived.push_back(f);
+                    frames_arrived_matchers.push_back(s->first);
+                }
+                else
+                {
+                    missing_streams.push_back(s->first);
+                }
+            }
+
+            if (frames_arrived.size() == 0)
+                break;
+
+            frame_holder* curr_sync;
+            if (frames_arrived.size() > 0)
+            {
+                curr_sync = frames_arrived[0];
+                synced_frames.push_back(frames_arrived_matchers[0]);
+            }
+
+            for (auto i = 1; i < frames_arrived.size(); i++)
+            {
+                if (are_equivalent(*curr_sync, *frames_arrived[i]))
+                {
+                    synced_frames.push_back(frames_arrived_matchers[i]);
+                }
+                else if (is_smaller_than(*frames_arrived[i], *curr_sync))
+                {
+                    old_frames = true;
+                    synced_frames.clear();
+                    synced_frames.push_back(frames_arrived_matchers[i]);
+                    curr_sync = frames_arrived[i];
+                }
+                else
+                {
+                    old_frames = true;
+                }
+            }
+
+            if (!old_frames)
+            {
+                for (auto i : missing_streams)
+                {
+                    if (!skip_missing_stream(synced_frames, i))
+                    {
+                        s <<  _name<<" "<<frames_to_string(synced_frames )<<" Wait for missing stream: ";
+
+                        for (auto&& stream : i->get_streams())
+                            s << stream<<" next expected "<<std::fixed<< _next_expected[i];
+                        synced_frames.clear();
+                        LOG_DEBUG(s.str());
+                        break;
+                    }
+                    else
+                    {
+                        std::stringstream s;
+                        s << _name << " " << frames_to_string(synced_frames) << " Skipped missing stream: ";
+                        for (auto&& stream : i->get_streams())
+                            s << stream << " next expected " << std::fixed << _next_expected[i]<<" ";
+                        LOG_DEBUG(s.str());
+                    }
+
+                }
+            }
+            else
+            {
+                s << _name << " old frames: ";
+            }
+            if (synced_frames.size())
+            {
+                std::vector<frame_holder> match;
+                match.reserve(synced_frames.size());
+
+                for (auto index : synced_frames)
+                {
+                    frame_holder frame;
+                    _frames_queue[index].dequeue(&frame);
+                    if (old_frames)
+                    {
+                        s  << "--> " << frame_to_string(frame) << "\n";
+                    }
+                    match.push_back(std::move(frame));
+                }
+
+                if (old_frames)
+                {
+                    LOG_DEBUG(s.str());
+                }
+
+                std::sort(match.begin(), match.end(), [](const frame_holder& f1, const frame_holder& f2)
+                {
+                    return ((frame_interface*)f1)->get_stream()->get_unique_id() > ((frame_interface*)f2)->get_stream()->get_unique_id();
+                });
+
+
+                frame_holder composite = env.source->allocate_composite_frame(std::move(match));
+                if (composite.frame)
+                {
+                    s <<"SYNCED "<<_name<<"--> "<< frame_to_string(composite)<<"\n";
+
+                    auto cb = begin_callback();
+                    _callback(std::move(composite), env);
+                }
+            }
+        } while (synced_frames.size() > 0);
+    }
+
+    frame_number_composite_matcher::frame_number_composite_matcher(std::vector<std::shared_ptr<matcher>> matchers)
+        :composite_matcher(matchers, "FN: ")
+    {
+    }
+
+    void frame_number_composite_matcher::update_last_arrived(frame_holder& f, matcher* m)
+    {
+        _last_arrived[m] =f->get_frame_number();
+    }
+
+    bool frame_number_composite_matcher::are_equivalent(frame_holder& a, frame_holder& b)
+    {
+        return a->get_frame_number() == b->get_frame_number();
+    }
+    bool frame_number_composite_matcher::is_smaller_than(frame_holder & a, frame_holder & b)
+    {
+        return a->get_frame_number() < b->get_frame_number();
+    }
+    void frame_number_composite_matcher::clean_inactive_streams(frame_holder& f)
+    {
+        std::vector<stream_id> inactive_matchers;
+        for(auto m: _matchers)
+        {
+            if (_last_arrived[m.second.get()] && (fabs((long long)f->get_frame_number() - (long long)_last_arrived[m.second.get()])) > 5)
+            {
+                std::stringstream s;
+                s << "clean inactive stream in "<<_name;
+                for (auto stream : m.second->get_streams_types())
+                {
+                    s << stream << " ";
+                }
+                LOG_DEBUG(s.str());
+
+                inactive_matchers.push_back(m.first);
+                m.second->set_active(false);
+            }
+        }
+
+        for(auto id: inactive_matchers)
+        {
+            _frames_queue[_matchers[id].get()].clear();
         }
     }
-}
 
-// Move a single frame from the head of the queue to the front buffer, while recycling the front buffer into the freelist
-void syncronizing_archive::dequeue_frame(rs_stream stream)
-{
-    auto & frame = frames[stream].front();
-    
-    // Log callback started
-    auto callback_start_time = std::chrono::high_resolution_clock::now();
-    frame.update_frame_callback_start_ts(callback_start_time);
-    auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(callback_start_time - capture_started).count();
-    LOG_DEBUG("CallbackStarted," << rsimpl::get_string(frame.get_stream_type()) << "," << frame.get_frame_number() << ",DispatchedAt," << ts);
+    bool frame_number_composite_matcher::skip_missing_stream(std::vector<matcher*> synced, matcher* missing)
+    {
+        frame_holder* synced_frame;
 
-    frontbuffer.place_frame(stream, std::move(frames[stream].front())); // the frame will move to free list once there are no external references to it
-    frames[stream].erase(begin(frames[stream]));
-}
+         if(!missing->get_active())
+             return true;
 
-// Move a single frame from the head of the queue directly to the freelist
-void syncronizing_archive::discard_frame(rs_stream stream)
-{
-    std::lock_guard<std::recursive_mutex> guard(mutex);
-    freelist.push_back(std::move(frames[stream].front()));
-    frames[stream].erase(begin(frames[stream]));
+        _frames_queue[synced[0]].peek(&synced_frame);
+
+        auto next_expected = _next_expected[missing];
+
+        if((*synced_frame)->get_frame_number() - next_expected > 4 || (*synced_frame)->get_frame_number() < next_expected)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    void frame_number_composite_matcher::update_next_expected(const frame_holder& f)
+    {
+        auto matcher = find_matcher(f);
+        _next_expected[matcher.get()] = f.frame->get_frame_number()+1.;
+    }
+
+    std::pair<double, double> extract_timestamps(frame_holder & a, frame_holder & b)
+    {
+        if (a->get_frame_timestamp_domain() == b->get_frame_timestamp_domain())
+            return{ a->get_frame_timestamp(), b->get_frame_timestamp() };
+        else
+        {
+            return{ (double)a->get_frame_metadata(RS2_FRAME_METADATA_TIME_OF_ARRIVAL),
+                    (double)b->get_frame_metadata(RS2_FRAME_METADATA_TIME_OF_ARRIVAL) };
+        }
+    }
+
+    timestamp_composite_matcher::timestamp_composite_matcher(std::vector<std::shared_ptr<matcher>> matchers)
+        :composite_matcher(matchers, "TS: ")
+    {
+    }
+    bool timestamp_composite_matcher::are_equivalent(frame_holder & a, frame_holder & b)
+    {
+        auto a_fps = get_fps(a);
+        auto b_fps = get_fps(b);
+
+        auto min_fps = std::min(a_fps, b_fps);
+
+        auto ts = extract_timestamps(a, b);
+
+        return  are_equivalent(ts.first, ts.second, min_fps);
+    }
+
+    bool timestamp_composite_matcher::is_smaller_than(frame_holder & a, frame_holder & b)
+    {
+        if (!a || !b)
+        {
+            return false;
+        }
+
+        auto ts = extract_timestamps(a, b);
+
+        return ts.first < ts.second;
+    }
+
+    void timestamp_composite_matcher::update_last_arrived(frame_holder& f, matcher* m)
+    {
+        if(f->supports_frame_metadata(RS2_FRAME_METADATA_ACTUAL_FPS))
+            _fps[m] = (uint32_t)f->get_frame_metadata(RS2_FRAME_METADATA_ACTUAL_FPS);
+
+        else
+            _fps[m] = f->get_stream()->get_framerate();
+
+        _last_arrived[m] = environment::get_instance().get_time_service()->get_time();
+    }
+
+    unsigned int timestamp_composite_matcher::get_fps(const frame_holder & f)
+    {
+        uint32_t fps = 0;
+        if(f.frame->supports_frame_metadata(RS2_FRAME_METADATA_ACTUAL_FPS))
+        {
+            fps = (uint32_t)f.frame->get_frame_metadata(RS2_FRAME_METADATA_ACTUAL_FPS);
+        }
+        LOG_DEBUG("fps " <<fps<<" "<< frame_to_string(const_cast<frame_holder&>(f)));
+        return fps?fps:f.frame->get_stream()->get_framerate();
+    }
+
+    void timestamp_composite_matcher::update_next_expected(const frame_holder & f)
+    {
+        auto fps = get_fps(f);
+        auto gap = 1000.f / (float)fps;
+
+        auto matcher = find_matcher(f);
+
+        _next_expected[matcher.get()] = f.frame->get_frame_timestamp() + gap;
+        _next_expected_domain[matcher.get()] = f.frame->get_frame_timestamp_domain();
+        LOG_DEBUG(_name << frame_to_string(const_cast<frame_holder&>(f))<<"fps " <<fps<<" gap " <<gap<<" next_expected: "<< _next_expected[matcher.get()]);
+
+    }
+
+    void timestamp_composite_matcher::clean_inactive_streams(frame_holder& f)
+    {
+        std::vector<stream_id> dead_matchers;
+        auto now = environment::get_instance().get_time_service()->get_time();
+        for(auto m: _matchers)
+        {
+            auto threshold = _fps[m.second.get()] ? (1000 / _fps[m.second.get()]) * 5 : 500; //if frame of a specific stream didn't arrive for time equivalence to 5 frames duration
+                                                                                             //this stream will be marked as "not active" in order to not stack the other streams
+            if(_last_arrived[m.second.get()] && (now - _last_arrived[m.second.get()]) > threshold)
+            {
+                std::stringstream s;
+                s << "clean inactive stream in "<<_name;
+                for (auto stream : m.second->get_streams_types())
+                {
+                    s << stream << " ";
+                }
+                LOG_DEBUG(s.str());
+
+                dead_matchers.push_back(m.first);
+                m.second->set_active(false);
+            }
+        }
+
+        for(auto id: dead_matchers)
+        {
+            _frames_queue[_matchers[id].get()].clear();
+            _frames_queue.erase(_matchers[id].get());
+        }
+    }
+
+    bool timestamp_composite_matcher::skip_missing_stream(std::vector<matcher*> synced, matcher* missing)
+    {
+        if(!missing->get_active())
+            return true;
+
+        frame_holder* synced_frame;
+
+        _frames_queue[synced[0]].peek(&synced_frame);
+
+        auto next_expected = _next_expected[missing];
+
+        auto it = _next_expected_domain.find(missing);
+        if (it != _next_expected_domain.end())
+        {
+            if (it->second != (*synced_frame)->get_frame_timestamp_domain())
+            {
+                return false;
+            }
+        }
+        auto gap = 1000.f/ (float)get_fps(*synced_frame);
+        //next expected of the missing stream didn't updated yet
+        if((*synced_frame)->get_frame_timestamp() > next_expected && abs((*synced_frame)->get_frame_timestamp()- next_expected)<gap*10)
+        {
+            LOG_DEBUG("next expected of the missing stream didn't updated yet");
+            return false;
+        }
+
+        return !are_equivalent((*synced_frame)->get_frame_timestamp(), next_expected, get_fps(*synced_frame));
+    }
+
+    bool timestamp_composite_matcher::are_equivalent(double a, double b, int fps)
+    {
+        auto gap = 1000.f / (float)fps;
+        return abs(a - b) < ((float)gap / (float)2) ;
+    }
 }
