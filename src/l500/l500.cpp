@@ -57,6 +57,12 @@ namespace librealsense
         return results;
     }
 
+    std::vector<uint8_t> l500_device::get_raw_calibration_table() const
+    {
+        command cmd(ivcam2::fw_cmd::DPT_INTRINSICS_GET);
+        return _hw_monitor->send(cmd);
+    }
+
     l500_device::l500_device(std::shared_ptr<context> ctx,
                              const platform::backend_device_group& group,
                              bool register_device_notifications)
@@ -66,6 +72,8 @@ namespace librealsense
         _ir_stream(new stream(RS2_STREAM_INFRARED)),
         _confidence_stream(new stream(RS2_STREAM_CONFIDENCE))
     {
+        _calib_table_raw = [this]() { return get_raw_calibration_table(); };
+
         static const auto device_name = "Intel RealSense L500";
 
         using namespace ivcam2;
@@ -82,7 +90,7 @@ namespace librealsense
                     std::make_shared<locked_transfer>(backend.create_usb_device(group.usb_devices.front()),
                                                                                 get_depth_sensor()));
 //#endif
-
+        *_calib_table_raw;  //work around to bug on fw
         auto fw_version = _hw_monitor->get_firmware_version_string(GVD, fw_version_offset);
         auto serial = _hw_monitor->get_module_serial_string(GVD, module_serial_offset);
 
@@ -135,5 +143,54 @@ namespace librealsense
         }
 
         return std::make_shared<timestamp_composite_matcher>(matchers);
+    }
+    rs2_time_t l500_timestamp_reader_from_metadata::get_frame_timestamp(const request_mapping& mode, const platform::frame_object& fo)
+    {
+        std::lock_guard<std::recursive_mutex> lock(_mtx);
+
+        if (has_metadata_ts(fo))
+        {
+            auto md = (librealsense::metadata_raw*)(fo.metadata);
+            return (double)(ts_wrap.calc(md->header.timestamp))*0.0001;
+        }
+        else
+        {
+            if (!one_time_note)
+            {
+                LOG_WARNING("UVC metadata payloads are not available for stream "
+                    << std::hex << mode.pf->fourcc << std::dec << (mode.profile.format)
+                    << ". Please refer to installation chapter for details.");
+                one_time_note = true;
+            }
+            return _backup_timestamp_reader->get_frame_timestamp(mode, fo);
+        }
+    }
+
+    unsigned long long l500_timestamp_reader_from_metadata::get_frame_counter(const request_mapping & mode, const platform::frame_object& fo) const
+    {
+        std::lock_guard<std::recursive_mutex> lock(_mtx);
+
+        if (has_metadata_fc(fo))
+        {
+            auto md = (librealsense::metadata_raw*)(fo.metadata);
+            return md->mode.sr300_rgb_mode.frame_counter; // The attribute offset is identical for all sr300-supported streams
+        }
+
+        return _backup_timestamp_reader->get_frame_counter(mode, fo);
+    }
+
+    void l500_timestamp_reader_from_metadata::reset()
+    {
+        std::lock_guard<std::recursive_mutex> lock(_mtx);
+        one_time_note = false;
+        _backup_timestamp_reader->reset();
+        ts_wrap.reset();
+    }
+
+    rs2_timestamp_domain l500_timestamp_reader_from_metadata::get_frame_timestamp_domain(const request_mapping & mode, const platform::frame_object& fo) const
+    {
+        std::lock_guard<std::recursive_mutex> lock(_mtx);
+
+        return (has_metadata_ts(fo)) ? RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK : _backup_timestamp_reader->get_frame_timestamp_domain(mode, fo);
     }
 }

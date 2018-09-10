@@ -208,9 +208,9 @@ PYBIND11_MODULE(NAME, m) {
     /* rs2_context.hpp */
     py::class_<rs2::context> context(m, "context");
     context.def(py::init<>())
-        .def("query_devices", &rs2::context::query_devices, "Create a static"
+        .def("query_devices", (rs2::device_list(rs2::context::*)() const) &rs2::context::query_devices, "Create a static"
             " snapshot of all connected devices a the time of the call.")
-        .def_property_readonly("devices", &rs2::context::query_devices,
+        .def_property_readonly("devices", (rs2::device_list (rs2::context::*)() const) &rs2::context::query_devices,
             "Create a static snapshot of all connected devices a the time of the call.")
         .def("query_all_sensors", &rs2::context::query_all_sensors, "Generate a flat list of "
             "all available sensors from all RealSense devices.")
@@ -290,9 +290,13 @@ PYBIND11_MODULE(NAME, m) {
 
     py::class_<rs2::event_information> event_information(m, "event_information");
     event_information.def("was_removed", &rs2::event_information::was_removed, "Check if "
-        "specific device was disconnected.", "dev"_a)
-        .def("get_new_devices", &rs2::event_information::get_new_devices, "Returns a "
-            "list of all newly connected devices");
+			  "specific device was disconnected.", "dev"_a)
+      .def("was_added", &rs2::event_information::was_added, "Check if "
+	   "specific device was added.", "dev"_a)
+      .def("get_new_devices", &rs2::event_information::get_new_devices, "Returns a "
+	   "list of all newly connected devices")
+      .def("get_removed_devices", &rs2::event_information::get_removed_devices, "Returns a "
+	   "list of all newly removed devices");
 
     py::class_<rs2::tm2, rs2::device> tm2(m, "tm2");
     tm2.def(py::init<rs2::device>(), "device"_a)
@@ -983,6 +987,5 @@ PYBIND11_MODULE(NAME, m) {
         std::array<float, 2> to_fow{};
         rs2_fov(&intrin, to_fow.data());
         return to_fow;
-
     }, "Calculate horizontal and vertical field of view, based on video intrinsics");
 }
