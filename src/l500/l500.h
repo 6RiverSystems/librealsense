@@ -69,6 +69,51 @@ namespace librealsense
         }
     };
 
+    class l500_timestamp_reader_from_metadata : public frame_timestamp_reader
+    {
+        std::unique_ptr<l500_timestamp_reader> _backup_timestamp_reader;
+        bool one_time_note;
+        mutable std::recursive_mutex _mtx;
+        arithmetic_wraparound<uint32_t, uint64_t > ts_wrap;
+
+    protected:
+
+        bool has_metadata_ts(const platform::frame_object& fo) const
+        {
+            // Metadata support for a specific stream is immutable
+            const bool has_md_ts = [&] { std::lock_guard<std::recursive_mutex> lock(_mtx);
+            return ((fo.metadata != nullptr) && (fo.metadata_size >= platform::uvc_header_size) && ((byte*)fo.metadata)[0] >= platform::uvc_header_size);
+            }();
+
+            return has_md_ts;
+        }
+
+        bool has_metadata_fc(const platform::frame_object& fo) const
+        {
+            // Metadata support for a specific stream is immutable
+            const bool has_md_frame_counter = [&] { std::lock_guard<std::recursive_mutex> lock(_mtx);
+            return ((fo.metadata != nullptr) && (fo.metadata_size > platform::uvc_header_size) && ((byte*)fo.metadata)[0] > platform::uvc_header_size);
+            }();
+
+            return has_md_frame_counter;
+        }
+
+    public:
+        l500_timestamp_reader_from_metadata(std::shared_ptr<platform::time_service> ts) :_backup_timestamp_reader(nullptr), one_time_note(false)
+        {
+            _backup_timestamp_reader = std::unique_ptr<l500_timestamp_reader>(new l500_timestamp_reader(ts));
+            reset();
+        }
+
+        rs2_time_t get_frame_timestamp(const request_mapping& mode, const platform::frame_object& fo) override;
+
+        unsigned long long get_frame_counter(const request_mapping & mode, const platform::frame_object& fo) const override;
+
+        void reset() override;
+
+        rs2_timestamp_domain get_frame_timestamp_domain(const request_mapping & mode, const platform::frame_object& fo) const override;
+    };
+
     class l500_info : public device_info
     {
     public:
@@ -101,6 +146,15 @@ namespace librealsense
     class l500_device final : public virtual device, public debug_interface
     {
     public:
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            tags.push_back({ RS2_STREAM_COLOR, -1, 640, 480, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+            tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+            tags.push_back({ RS2_STREAM_INFRARED, -1, 640, 480, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            return tags;
+        };
+
         class l500_depth_sensor : public uvc_sensor, public video_sensor_interface, public depth_sensor
         {
         public:
@@ -111,8 +165,20 @@ namespace librealsense
 
             rs2_intrinsics get_intrinsics(const stream_profile& profile) const override
             {
-                // TODO
-                return rs2_intrinsics{};
+                auto res = *_owner->_calib_table_raw;
+                auto intr = (float*)res.data();
+
+                if (res.size() < sizeof(float) * 4)
+                    throw invalid_value_exception("size of calibration invalid");
+
+                rs2_intrinsics intrinsics;
+                intrinsics.width = profile.width;
+                intrinsics.height = profile.height;
+                intrinsics.fx = intr[0];
+                intrinsics.fy = intr[1];
+                intrinsics.ppx = intr[2];
+                intrinsics.ppy = intr[3];
+                return intrinsics;
             }
 
             stream_profiles init_stream_profiles() override
@@ -138,14 +204,6 @@ namespace librealsense
 
                     // Register intrinsics
                     auto video = dynamic_cast<video_stream_profile_interface*>(p.get());
-                    if (video->get_width() == 640 && video->get_height() == 480 && video->get_format() == RS2_FORMAT_Z16 && video->get_framerate() == 30)
-                        video->make_default();
-
-                    if (video->get_width() == 640 && video->get_height() == 480 && video->get_format() == RS2_FORMAT_Y8 && video->get_framerate() == 30)
-                        video->make_default();
-
-                    if (video->get_width() == 640 && video->get_height() == 480 && video->get_format() == RS2_FORMAT_RAW8 && video->get_framerate() == 30)
-                        video->make_default();
 
                     auto profile = to_profile(p.get());
                     std::weak_ptr<l500_depth_sensor> wp =
@@ -164,7 +222,7 @@ namespace librealsense
                 return results;
             }
 
-            float get_depth_scale() const override { return 0.001f; } // TODO
+            float get_depth_scale() const override {  return get_option(RS2_OPTION_DEPTH_UNITS).query(); }
 
             void create_snapshot(std::shared_ptr<depth_sensor>& snapshot) const  override
             {
@@ -178,6 +236,7 @@ namespace librealsense
             }
         private:
             const l500_device* _owner;
+            float _depth_units;
         };
 
         std::shared_ptr<uvc_sensor> create_depth_device(std::shared_ptr<context> ctx,
@@ -191,7 +250,8 @@ namespace librealsense
                 depth_devices.push_back(backend.create_uvc_device(info));
 
             auto depth_ep = std::make_shared<l500_depth_sensor>(this, std::make_shared<platform::multi_pins_uvc_device>(depth_devices),
-                                                                std::unique_ptr<frame_timestamp_reader>(new l500_timestamp_reader(backend.create_time_service())));
+                std::unique_ptr<frame_timestamp_reader>(new l500_timestamp_reader_from_metadata(backend.create_time_service())));
+                                                               // std::unique_ptr<frame_timestamp_reader>(new l500_timestamp_reader(backend.create_time_service())));
 
             depth_ep->register_xu(depth_xu);
             depth_ep->register_pixel_format(pf_z16_l500);
@@ -204,6 +264,9 @@ namespace librealsense
                     ivcam2::depth_xu,
                     ivcam2::IVCAM2_DEPTH_LASER_POWER, "Power of the l500 projector, with 0 meaning projector off"));
           
+            depth_ep->register_option(RS2_OPTION_DEPTH_UNITS, std::make_shared<const_value_option>("Number of meters represented by a single depth unit",
+                lazy<float>([]() { 
+                return 0.000125f; })));
             return depth_ep;
         }
 
@@ -219,6 +282,7 @@ namespace librealsense
 
         uvc_sensor& get_depth_sensor() { return dynamic_cast<uvc_sensor&>(get_sensor(_depth_device_idx)); }
 
+        std::vector<uint8_t> get_raw_calibration_table() const;
 
         l500_device(std::shared_ptr<context> ctx,
                     const platform::backend_device_group& group,
@@ -235,6 +299,8 @@ namespace librealsense
         std::shared_ptr<stream_interface> _depth_stream;
         std::shared_ptr<stream_interface> _ir_stream;
         std::shared_ptr<stream_interface> _confidence_stream;
+
+        lazy<std::vector<uint8_t>> _calib_table_raw;
 
         void force_hardware_reset() const;
     };

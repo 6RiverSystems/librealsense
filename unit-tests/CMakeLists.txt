@@ -1,5 +1,5 @@
-#  minimum required cmake version: 3.8.0
-cmake_minimum_required(VERSION 3.8.0)
+#  minimum required cmake version: 3.1.0
+cmake_minimum_required(VERSION 3.1.0)
 
 project(RealsenseUnitTests)
 
@@ -19,7 +19,13 @@ endif()
 
 set(DEPENDENCIES realsense2)
 
-set (unit_tests_sources unit-tests-live.cpp unit-tests-post-processing.cpp unit-tests-post-processing.h unit-tests-main.cpp unit-tests-common.h)
+set (unit_tests_sources
+    unit-tests-live.cpp
+    unit-tests-post-processing.cpp
+    unit-tests-post-processing.h
+    unit-tests-main.cpp
+    unit-tests-common.h
+)
 
 add_executable(live-test ${unit_tests_sources})
 target_link_libraries(live-test ${DEPENDENCIES})
@@ -32,7 +38,7 @@ install(
     TARGETS
 
     live-test
-
+	
     RUNTIME DESTINATION
     ${CMAKE_INSTALL_PREFIX}/bin
 )
@@ -45,6 +51,12 @@ else() # Data shall be preserved between reboots. For Linux distributions/ ANDRO
     #set(Deployment_Location /var/tmp/) The standard confoiguration currently fails on CI
     set(Deployment_Location /tmp/)
 endif()
+
+add_custom_command(TARGET live-test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/resources
+    ${Deployment_Location}
+)
 
 #Post-Processing data set for unit-tests
 #message(STATUS "Post processing deployment directory=${Deployment_Location}")

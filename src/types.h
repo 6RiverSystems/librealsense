@@ -992,6 +992,8 @@ namespace librealsense
         int size = 0;
 
     public:
+        static const int CAPACITY = C;
+
         small_heap()
         {
             for (auto i = 0; i < C; i++)
@@ -1580,6 +1582,16 @@ namespace librealsense
         T&& operator*() &&
         {
             return std::move(_value);
+        }
+
+        bool operator==(const T& other) const 
+        {
+            return this->_value == other;
+        }
+
+        bool operator!=(const T& other) const
+        {
+            return !(*this == other);
         }
     private:
         bool _valid;

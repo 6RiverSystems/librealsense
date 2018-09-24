@@ -164,6 +164,28 @@ void compare_frame_md(rs2::frame origin_depth, rs2::frame result_depth)
     }
 }
 
+// Test file name  , Filters configuraiton
+const std::vector< std::pair<std::string, std::string>> ppf_test_cases = {
+    // All the tests below include depth-disparity domain transformation
+    // Downsample scales 2/3
+    { "1525186403504",  "D415_DS(2)" },
+{ "1525186407536",  "D415_DS(3)" },
+// Downsample + Hole-Filling modes 0/1/2
+{ "1525072818314",  "D415_DS(1)_HoleFill(0)" },
+{ "1525072823227",  "D415_DS(1)_HoleFill(1)" },
+{ "1524668713358",  "D435_DS(3)_HoleFill(2)" },
+// Downsample + Spatial Filter parameters
+{ "1525267760676",  "D415_DS(2)+Spat(A:0.85/D:32/I:3)" },
+// Downsample + Temporal Filter
+{ "1525266028697",  "D415_DS(2)+Temp(A:0.25/D:15/P:1)" },
+{ "1525265554250",  "D415_DS(2)+Temp(A:0.25/D:15/P:3)" },
+{ "1525266069476",  "D415_DS(2)+Temp(A:0.25/D:15/P:5)" },
+{ "1525266120520",  "D415_DS(3)+Temp(A:0.25/D:15/P:7)" },
+// Downsample + Spatial + Temporal (+ Hole-Filling)
+{ "1525267168585",  "D415_DS(2)_Spat(A:0.85/D:32/I:3)_Temp(A:0.25/D:15/P:0)" },
+{ "1525089539880",  "D415_DS(2)_Spat(A:0.85/D:32/I:3)_Temp(A:0.25/D:15/P:0)_HoleFill(1)" },
+};
+
 // The test is intended to check the results of filters applied on a sequence of frames, specifically the temporal filter
 // that preserves an internal state. The test utilizes rosbag recordings
 TEST_CASE("Post-Processing Filters sequence validation", "[software-device][post-processing-filters]")
@@ -172,28 +194,6 @@ TEST_CASE("Post-Processing Filters sequence validation", "[software-device][post
 
     if (make_context(SECTION_FROM_TEST_NAME, &ctx))
     {
-        // Test file name  , Filters configuraiton
-        const std::vector< std::pair<std::string, std::string>> ppf_test_cases = {
-            // All the tests below include depth-disparity domain transformation
-            // Downsample scales 2/3
-            { "1525186403504",  "D415_DS(2)" },
-            { "1525186407536",  "D415_DS(3)" },
-            // Downsample + Hole-Filling modes 0/1/2
-            { "1525072818314",  "D415_DS(1)_HoleFill(0)" },
-            { "1525072823227",  "D415_DS(1)_HoleFill(1)" },
-            { "1524668713358",  "D435_DS(3)_HoleFill(2)" },
-            // Downsample + Spatial Filter parameters
-            { "1525267760676",  "D415_DS(2)+Spat(A:0.85/D:32/I:3)" },
-            // Downsample + Temporal Filter
-            { "1525266028697",  "D415_DS(2)+Temp(A:0.25/D:15/P:1)" },
-            { "1525265554250",  "D415_DS(2)+Temp(A:0.25/D:15/P:3)" },
-            { "1525266069476",  "D415_DS(2)+Temp(A:0.25/D:15/P:5)" },
-            { "1525266120520",  "D415_DS(3)+Temp(A:0.25/D:15/P:7)" },
-            // Downsample + Spatial + Temporal (+ Hole-Filling)
-            { "1525267168585",  "D415_DS(2)_Spat(A:0.85/D:32/I:3)_Temp(A:0.25/D:15/P:0)" },
-            { "1525089539880",  "D415_DS(2)_Spat(A:0.85/D:32/I:3)_Temp(A:0.25/D:15/P:0)_HoleFill(1)" },
-        };
-
         ppf_test_config test_cfg;
 
         for (auto& ppf_test : ppf_test_cases)
@@ -258,9 +258,252 @@ TEST_CASE("Post-Processing Filters sequence validation", "[software-device][post
 
                 // Compare the resulted frame versus input
                 validate_ppf_results(depth, filtered_depth, test_cfg, i);
+            }
+        }
+    }
+}
+
+TEST_CASE("Post-Processing Filters metadata validation", "[software-device][post-processing-filters]")
+{
+    rs2::context ctx;
+
+    if (make_context(SECTION_FROM_TEST_NAME, &ctx))
+    {
+        ppf_test_config test_cfg;
+        for (auto& ppf_test : ppf_test_cases)
+        {
+            CAPTURE(ppf_test.first);
+            CAPTURE(ppf_test.second);
+
+            WARN("PPF test " << ppf_test.first << "[" << ppf_test.second << "]");
+
+            // Load the data from configuration and raw frame files
+            if (!load_test_configuration(ppf_test.first, test_cfg))
+                continue;
+
+            post_processing_filters ppf;
+
+            // Apply the retrieved configuration onto a local post-processing chain of filters
+            REQUIRE_NOTHROW(ppf.configure(test_cfg));
+
+            rs2::software_device dev; // Create software-only device
+            auto depth_sensor = dev.add_sensor("Depth");
+
+            int width = test_cfg.input_res_x;
+            int height = test_cfg.input_res_y;
+            int depth_bpp = 2; //16bit unsigned
+            int frame_number = 1;
+            rs2_intrinsics depth_intrinsics = { width, height,
+                width / 2.f, height / 2.f,                      // Principal point (N/A in this test)
+                test_cfg.focal_length ,test_cfg.focal_length,   // Focal Length
+                RS2_DISTORTION_BROWN_CONRADY ,{ 0,0,0,0,0 } };
+
+            auto depth_stream_profile = depth_sensor.add_video_stream({ RS2_STREAM_DEPTH, 0, 0, width, height, 30, depth_bpp, RS2_FORMAT_Z16, depth_intrinsics });
+
+            // Establish the required chain of filters
+            dev.create_matcher(RS2_MATCHER_DLR_C);
+            rs2::syncer sync;
+
+            depth_sensor.open(depth_stream_profile);
+            depth_sensor.start(sync);
+
+            size_t frames = (test_cfg.frames_sequence_size > 1) ? test_cfg.frames_sequence_size : 1;
+            for (auto i = 0; i < frames; i++)
+            {
+                //set next frames metadata
+                for (auto i = 0; i < rs2_frame_metadata_value::RS2_FRAME_METADATA_COUNT; i++)
+                    depth_sensor.set_metadata((rs2_frame_metadata_value)i, rand());
+
+                // Inject input frame
+                depth_sensor.on_video_frame({ test_cfg._input_frames[i].data(), // Frame pixels from capture API
+                    [](void*) {},                   // Custom deleter (if required)
+                    (int)test_cfg.input_res_x *depth_bpp,    // Stride
+                    depth_bpp,                          // Bytes-per-pixels
+                    (rs2_time_t)frame_number + i,      // Timestamp
+                    RS2_TIMESTAMP_DOMAIN_SYSTEM_TIME,   // Clock Domain
+                    frame_number,                       // Frame# for potential sync services
+                    depth_stream_profile });            // Depth stream profile
+
+                rs2::frameset fset = sync.wait_for_frames();
+                REQUIRE(fset);
+                rs2::frame depth = fset.first_or_default(RS2_STREAM_DEPTH);
+                REQUIRE(depth);
+
+                // ... here the actual filters are being applied
+                auto filtered_depth = ppf.process(depth);
+
+                // Compare the resulted frame metadata versus input
                 compare_frame_md(depth, filtered_depth);
             }
         }
     }
 }
 
+bool is_subset(rs2::frameset full, rs2::frameset sub)
+{
+    if (!sub.is<rs2::frameset>())
+        return false;
+    if (full.size() == 0 && sub.size() == 0)
+        return false;
+    for (auto f : full)
+    {
+        if (!sub.first(f.get_profile().stream_type(), f.get_profile().format()))
+            return false;
+    }
+    return true;
+}
+
+bool is_equal(rs2::frameset org, rs2::frameset processed)
+{
+    if (!org.is<rs2::frameset>() || !processed.is<rs2::frameset>())
+        return false;
+    if (org.size() != processed.size() || org.size() == 0)
+        return false;
+    for (auto o : org)
+    {
+        auto curr_profile = o.get_profile();
+        bool found = false;
+        processed.foreach([&curr_profile, &found](const rs2::frame& f)
+        {
+            auto processed_profile = f.get_profile();
+            if (curr_profile.unique_id() == processed_profile.unique_id())
+                found = true;
+        });
+        if(!found)
+            return false;
+    }
+    return true;
+}
+
+TEST_CASE("Post-Processing expected output", "[post-processing-filters]")
+{
+    rs2::context ctx;
+
+    if (!make_context(SECTION_FROM_TEST_NAME, &ctx))
+        return;
+
+    rs2::temporal_filter temporal;
+    rs2::hole_filling_filter hole_filling;
+    rs2::spatial_filter spatial;
+    rs2::decimation_filter decimation(4);
+    rs2::align aligner(RS2_STREAM_COLOR);
+    rs2::colorizer depth_colorizer;
+    rs2::disparity_transform to_disp;
+    rs2::disparity_transform from_disp(false);
+
+    rs2::config cfg;
+    cfg.enable_all_streams();
+
+    rs2::pipeline pipe(ctx);
+    auto profile = pipe.start(cfg);
+
+    bool supports_disparity = false;
+    for (auto s : profile.get_device().query_sensors())
+    {
+        if (s.supports(RS2_OPTION_STEREO_BASELINE))
+        {
+            supports_disparity = true;
+            break;
+        }
+    }
+
+    rs2::frameset original = pipe.wait_for_frames();
+
+    //set to set
+    rs2::frameset temp_processed_set = original.apply_filter(temporal);
+    REQUIRE(is_subset(original, temp_processed_set));
+    REQUIRE(is_subset(temp_processed_set, original));
+
+    rs2::frameset hole_processed_set = original.apply_filter(hole_filling);
+    REQUIRE(is_subset(original, hole_processed_set));
+    REQUIRE(is_subset(hole_processed_set, original));
+
+    rs2::frameset spatial_processed_set = original.apply_filter(spatial);
+    REQUIRE(is_subset(original, spatial_processed_set));
+    REQUIRE(is_subset(spatial_processed_set, original));
+
+    rs2::frameset decimation_processed_set = original.apply_filter(decimation);
+    REQUIRE(is_subset(original, decimation_processed_set));
+    REQUIRE(is_subset(decimation_processed_set, original));
+
+    rs2::frameset align_processed_set = original.apply_filter(aligner);
+    REQUIRE(is_subset(original, align_processed_set));
+    REQUIRE(is_subset(align_processed_set, original));
+
+    rs2::frameset colorizer_processed_set = original.apply_filter(depth_colorizer);
+    REQUIRE(is_subset(original, colorizer_processed_set));
+    REQUIRE_THROWS(is_subset(colorizer_processed_set, original));
+
+    rs2::frameset to_disp_processed_set = original.apply_filter(to_disp);
+    REQUIRE(is_subset(original, to_disp_processed_set));
+    if(supports_disparity)
+        REQUIRE_THROWS(is_subset(to_disp_processed_set, original));
+
+    rs2::frameset from_disp_processed_set = original.apply_filter(from_disp);//should bypass
+    REQUIRE(is_equal(original, from_disp_processed_set));
+
+    rs2::frameset full_pipe = original.
+        apply_filter(decimation).
+        apply_filter(to_disp).
+        apply_filter(spatial).
+        apply_filter(temporal).
+        apply_filter(from_disp).
+        apply_filter(aligner).
+        apply_filter(hole_filling).
+        apply_filter(depth_colorizer);
+
+    REQUIRE(is_subset(original, full_pipe));
+    REQUIRE_THROWS(is_subset(full_pipe, original));
+
+    //single to single
+    rs2::video_frame org_depth = original.get_depth_frame();
+
+    rs2::video_frame temp_processed_frame = org_depth.apply_filter(temporal);
+    REQUIRE_FALSE(temp_processed_frame.is<rs2::frameset>());
+    REQUIRE(temp_processed_frame.get_profile().stream_type() == RS2_STREAM_DEPTH);
+    REQUIRE(temp_processed_frame.get_profile().format() == RS2_FORMAT_Z16);
+    REQUIRE(org_depth.get_width() == temp_processed_frame.get_width());
+
+    rs2::video_frame hole_processed_frame = org_depth.apply_filter(hole_filling);
+    REQUIRE_FALSE(hole_processed_frame.is<rs2::frameset>());
+    REQUIRE(hole_processed_frame.get_profile().stream_type() == RS2_STREAM_DEPTH);
+    REQUIRE(hole_processed_frame.get_profile().format() == RS2_FORMAT_Z16);
+    REQUIRE(org_depth.get_width() == hole_processed_frame.get_width());
+
+    rs2::video_frame spatial_processed_frame = org_depth.apply_filter(spatial);
+    REQUIRE_FALSE(spatial_processed_frame.is<rs2::frameset>());
+    REQUIRE(spatial_processed_frame.get_profile().stream_type() == RS2_STREAM_DEPTH);
+    REQUIRE(spatial_processed_frame.get_profile().format() == RS2_FORMAT_Z16);
+    REQUIRE(org_depth.get_width() == spatial_processed_frame.get_width());
+
+    rs2::video_frame decimation_processed_frame = org_depth.apply_filter(decimation);
+    REQUIRE_FALSE(decimation_processed_frame.is<rs2::frameset>());
+    REQUIRE(decimation_processed_frame.get_profile().stream_type() == RS2_STREAM_DEPTH);
+    REQUIRE(decimation_processed_frame.get_profile().format() == RS2_FORMAT_Z16);
+    REQUIRE(org_depth.get_width() > decimation_processed_frame.get_width());
+
+    rs2::video_frame colorizer_processed_frame = org_depth.apply_filter(depth_colorizer);
+    REQUIRE_FALSE(colorizer_processed_frame.is<rs2::frameset>());
+    REQUIRE(colorizer_processed_frame.get_profile().stream_type() == RS2_STREAM_DEPTH);
+    REQUIRE(colorizer_processed_frame.get_profile().format() == RS2_FORMAT_RGB8);
+    REQUIRE(org_depth.get_width() == colorizer_processed_frame.get_width());
+
+    rs2::video_frame to_disp_processed_frame = org_depth.apply_filter(to_disp);
+    REQUIRE_FALSE(to_disp_processed_frame.is<rs2::frameset>());
+    REQUIRE(to_disp_processed_frame.get_profile().stream_type() == RS2_STREAM_DEPTH);
+    bool is_disp = to_disp_processed_frame.get_profile().format() == RS2_FORMAT_DISPARITY16 || 
+        to_disp_processed_frame.get_profile().format() == RS2_FORMAT_DISPARITY32;
+    if (supports_disparity)
+    {
+        REQUIRE(is_disp);
+        REQUIRE(org_depth.get_width() == to_disp_processed_frame.get_width());
+    }
+
+    rs2::video_frame from_disp_processed_frame = org_depth.apply_filter(from_disp);//should bypass
+    REQUIRE_FALSE(from_disp_processed_frame.is<rs2::frameset>());
+    REQUIRE(from_disp_processed_frame.get_profile().stream_type() == RS2_STREAM_DEPTH);
+    REQUIRE(from_disp_processed_frame.get_profile().format() == RS2_FORMAT_Z16);
+    REQUIRE(org_depth.get_width() == from_disp_processed_frame.get_width());
+
+    pipe.stop();
+}

@@ -52,6 +52,12 @@ namespace Intel.RealSense
             }
         }
 
+        public bool Contains(Device device)
+        {
+            object error;
+            return System.Convert.ToBoolean(NativeMethods.rs2_device_list_contains(m_instance, device.m_instance, out error));
+        }
+
         #region IDisposable Support
         private bool disposedValue = false; // To detect redundant calls
 
@@ -91,7 +97,7 @@ namespace Intel.RealSense
         #endregion
     }
 
-    public class Device
+    public class Device : IDisposable
     {
         public IntPtr m_instance;
 
@@ -152,6 +158,43 @@ namespace Intel.RealSense
                 return QuerySensors();
             }
         }
+
+        #region IDisposable Support
+        private bool disposedValue = false; // To detect redundant calls
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    // TODO: dispose managed state (managed objects).
+                }
+
+                // TODO: free unmanaged resources (unmanaged objects) and override a finalizer below.
+                // TODO: set large fields to null.
+                NativeMethods.rs2_delete_device(m_instance);
+
+                disposedValue = true;
+            }
+        }
+
+        // TODO: override a finalizer only if Dispose(bool disposing) above has code to free unmanaged resources.
+        ~Device()
+        {
+            // Do not change this code. Put cleanup code in Dispose(bool disposing) above.
+            Dispose(false);
+        }
+
+        // This code added to correctly implement the disposable pattern.
+        public void Dispose()
+        {
+            // Do not change this code. Put cleanup code in Dispose(bool disposing) above.
+            Dispose(true);
+            // TODO: uncomment the following line if the finalizer is overridden above.
+            GC.SuppressFinalize(this);
+        }
+        #endregion
     }
 
     public class AdvancedDevice : Device
@@ -208,4 +251,130 @@ namespace Intel.RealSense
         }
     }
 
+    public class PlaybackDevice : Device
+    {
+        internal PlaybackDevice(IntPtr dev) : base(dev)
+        {
+
+        }
+
+        public static PlaybackDevice FromDevice(Device dev)
+        {
+            object error;
+            if (NativeMethods.rs2_is_device_extendable_to(dev.m_instance, Extension.Playback, out error) == 0)
+            {
+                throw new ArgumentException("Device does not support Playback");
+            }
+
+            return new PlaybackDevice(dev.m_instance);
+        }
+
+        public void Pause()
+        {
+            object error;
+            NativeMethods.rs2_playback_device_pause(m_instance, out error);
+        }
+
+        public void Resume()
+        {
+            object error;
+            NativeMethods.rs2_playback_device_resume(m_instance, out error);
+        }
+
+        public PlaybackStatus Status
+        {
+            get
+            {
+                object error;
+                return NativeMethods.rs2_playback_device_get_current_status(m_instance, out error);
+            }
+        }
+
+        public ulong Duration
+        {
+            get
+            {
+                object error;
+                return NativeMethods.rs2_playback_get_duration(m_instance, out error);
+            }
+        }
+
+        public ulong Position
+        {
+            get
+            {
+                object error;
+                return NativeMethods.rs2_playback_get_position(m_instance, out error);
+            }
+            set
+            {
+                object error;
+                NativeMethods.rs2_playback_seek(m_instance, (long)value, out error);
+            }
+        }
+
+        public void Seek(long time)
+        {
+            object error;
+            NativeMethods.rs2_playback_seek(m_instance, time, out error);
+        }
+
+        public bool Realtime
+        {
+            get
+            {
+                object error;
+                return NativeMethods.rs2_playback_device_is_real_time(m_instance, out error) != 0;
+            }
+            set
+            {
+                object error;
+                NativeMethods.rs2_playback_device_set_real_time(m_instance, value ? 1 : 0, out error);
+            }
+        }
+
+        public float Speed
+        {
+            set
+            {
+                object error;
+                NativeMethods.rs2_playback_device_set_playback_speed(m_instance, value, out error);
+            }
+        }
+    }
+
+
+    public class RecordDevice : Device
+    {
+        IntPtr m_dev;
+
+        public RecordDevice(Device dev, string file) : base(IntPtr.Zero)
+        {
+            m_dev = dev.m_instance;
+            object error;
+            m_instance = NativeMethods.rs2_create_record_device(m_dev, file, out error);
+        }
+
+        public void Pause()
+        {
+            object error;
+            NativeMethods.rs2_record_device_pause(m_instance, out error);
+        }
+
+        public void Resume()
+        {
+            object error;
+            NativeMethods.rs2_record_device_resume(m_instance, out error);
+        }
+
+        public string Filename
+        {
+            get
+            {
+                object error;
+                var p = NativeMethods.rs2_record_device_filename(m_instance, out error);
+                return Marshal.PtrToStringAnsi(p);
+            }
+        }
+    }
 }

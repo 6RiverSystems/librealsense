@@ -477,10 +477,10 @@ namespace rs2
             bool load_json_if_streaming = false,
             json_loading_func json_loading = [](std::function<void()> load) {load(); },
             bool draw_device_outline = true);
-        void handle_harware_events(const std::string& serialized_data);
+        void handle_hardware_events(const std::string& serialized_data);
 
         std::vector<std::shared_ptr<subdevice_model>> subdevices;
-
+        bool is_streaming() const;
         bool metadata_supported = false;
         bool get_curr_advanced_controls = true;
         device dev;
@@ -656,6 +656,11 @@ namespace rs2
             {
                 render_thread.join();
             }
+        }
+
+        bool is_rendering() const
+        {
+            return render_thread_active.load();
         }
 
         rs2::frameset get_points()

@@ -37,6 +37,25 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor()) {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+        
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1280, 720, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 1280, 720, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_RGB8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_RGB8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // DS5U_S
@@ -52,9 +71,28 @@ namespace librealsense
             ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor()) {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 720, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1152, 1152, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 1152, 1152, RS2_FORMAT_Y16, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 720, 720, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1152, 1152, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 1152, 1152, RS2_FORMAT_Y16, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
-    // ASR
+    // ASR (D460)
     class rs410_device : public ds5_rolling_shutter,
                          public ds5_active, public ds5_advanced_mode_base
     {
@@ -69,6 +107,25 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor())  {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 0, 1280, 720, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1280, 720, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 0, 640, 480, RS2_FORMAT_RGB8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_RGB8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // ASRC
@@ -89,6 +146,25 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor())  {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_COLOR, -1, 640, 480, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, -1, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_COLOR, -1, 640, 480, RS2_FORMAT_RGB8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, -1, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // PWGT
@@ -104,6 +180,25 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor())  {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // PWG
@@ -118,6 +213,25 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor()) {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // AWG
@@ -133,6 +247,25 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor())  {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // AWGT
@@ -151,6 +284,27 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor())  {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+                tags.push_back({ RS2_STREAM_FISHEYE, -1, 640, 480, RS2_FORMAT_RAW8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 1, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, 2, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+                tags.push_back({ RS2_STREAM_FISHEYE, -1, 640, 480, RS2_FORMAT_RAW8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // AWGC
@@ -170,6 +324,24 @@ namespace librealsense
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const override;
 
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_COLOR, -1, 640, 480, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, -1, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_COLOR, -1, 640, 480, RS2_FORMAT_RGB8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, -1, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     // AWGCT
@@ -190,6 +362,25 @@ namespace librealsense
               ds5_advanced_mode_base(ds5_device::_hw_monitor, get_depth_sensor()) {}
 
         std::shared_ptr<matcher> create_matcher(const frame_holder& frame) const;
+
+        std::vector<tagged_profile> get_profiles_tags() const override
+        {
+            std::vector<tagged_profile> tags;
+            auto usb_spec = get_usb_spec();
+            if (usb_spec >= platform::usb3_type || usb_spec == platform::usb_undefined)
+            {
+                tags.push_back({ RS2_STREAM_COLOR, -1, 640, 480, RS2_FORMAT_RGB8, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 1280, 720, RS2_FORMAT_Z16, 30, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, -1, 1280, 720, RS2_FORMAT_Y8, 30, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            else
+            {
+                tags.push_back({ RS2_STREAM_COLOR, -1, 640, 480, RS2_FORMAT_RGB8, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_DEPTH, -1, 640, 480, RS2_FORMAT_Z16, 15, profile_tag::PROFILE_TAG_SUPERSET | profile_tag::PROFILE_TAG_DEFAULT });
+                tags.push_back({ RS2_STREAM_INFRARED, -1, 640, 480, RS2_FORMAT_Y8, 15, profile_tag::PROFILE_TAG_SUPERSET });
+            }
+            return tags;
+        };
     };
 
     std::shared_ptr<device_interface> ds5_info::create(std::shared_ptr<context> ctx,
@@ -241,18 +432,15 @@ namespace librealsense
 
         auto valid_pid = filter_by_product(group.uvc_devices, ds::rs400_sku_pid);
         auto group_devices = group_devices_and_hids_by_unique_id(group_devices_by_unique_id(valid_pid), group.hid_devices);
+
         for (auto& g : group_devices)
         {
             auto& devices = g.first;
             auto& hids = g.second;
 
-            if((devices[0].pid == ds::RS430_MM_PID || devices[0].pid == ds::RS420_MM_PID) &&  hids.size()==0)
-                continue;
-
             bool all_sensors_present = mi_present(devices, 0);
 
-            constexpr std::array<int, 3> multi_sensors = { ds::RS415_PID, ds::RS430_MM_RGB_PID, ds::RS435_RGB_PID};
-            auto is_pid_of_multisensor_device = [&multi_sensors](int pid) { return std::find(std::begin(multi_sensors), std::end(multi_sensors), pid) != std::end(multi_sensors); };
+            auto is_pid_of_multisensor_device = [](int pid) { return std::find(std::begin(ds::multi_sensors_pid), std::end(ds::multi_sensors_pid), pid) != std::end(ds::multi_sensors_pid); };
             bool is_device_multisensor = false;
             for (auto&& uvc : devices)
             {
