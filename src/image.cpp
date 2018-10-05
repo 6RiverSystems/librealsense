@@ -8,8 +8,9 @@
 
 #ifdef RS2_USE_CUDA
 #include "cuda/cuda-conversion.cuh"
-#elif __SSSE3__
-#include <tmmintrin.h> // For SSE3 intrinsic used in unpack_yuy2_sse
+#endif
+#ifdef __SSSE3__
+#include <tmmintrin.h> // For SSSE3 intrinsics
 #endif
 
 #if defined (ANDROID) || (defined (__linux__) && !defined (__x86_64__))
@@ -19,6 +20,7 @@ bool has_avx() { return false; }
 #else
 
 #ifdef _WIN32
+#include <intrin.h>
 #define cpuid(info, x)    __cpuidex(info, x, 0)
 #else
 #include <cpuid.h>
@@ -306,21 +308,22 @@ namespace librealsense
         assert(n % 16 == 0); // All currently supported color resolutions are multiples of 16 pixels. Could easily extend support to other resolutions by copying final n<16 pixels into a zero-padded buffer and recursively calling self for final iteration.
 #ifdef RS2_USE_CUDA
         rscuda::unpack_yuy2_cuda<FORMAT>(d, s, n);
-                  
-
-#elif __SSSE3__
+#endif
+#if defined __SSSE3__ && ! defined ANDROID
         static bool do_avx = has_avx();
+        #ifdef __AVX2__
 
-        if (do_avx)
-        {
-            if (FORMAT == RS2_FORMAT_Y8) unpack_yuy2_avx_y8(d, s, n);
-            if (FORMAT == RS2_FORMAT_Y16) unpack_yuy2_avx_y16(d, s, n);
-            if (FORMAT == RS2_FORMAT_RGB8) unpack_yuy2_avx_rgb8(d, s, n);
-            if (FORMAT == RS2_FORMAT_RGBA8) unpack_yuy2_avx_rgba8(d, s, n);
-            if (FORMAT == RS2_FORMAT_BGR8) unpack_yuy2_avx_bgr8(d, s, n);
-            if (FORMAT == RS2_FORMAT_BGRA8) unpack_yuy2_avx_bgra8(d, s, n);
-        }
-        else
+                if (do_avx)
+                {
+                    if (FORMAT == RS2_FORMAT_Y8) unpack_yuy2_avx_y8(d, s, n);
+                    if (FORMAT == RS2_FORMAT_Y16) unpack_yuy2_avx_y16(d, s, n);
+                    if (FORMAT == RS2_FORMAT_RGB8) unpack_yuy2_avx_rgb8(d, s, n);
+                    if (FORMAT == RS2_FORMAT_RGBA8) unpack_yuy2_avx_rgba8(d, s, n);
+                    if (FORMAT == RS2_FORMAT_BGR8) unpack_yuy2_avx_bgr8(d, s, n);
+                    if (FORMAT == RS2_FORMAT_BGRA8) unpack_yuy2_avx_bgra8(d, s, n);
+                }
+                else
+        #endif
         {
             auto src = reinterpret_cast<const __m128i *>(s);
             auto dst = reinterpret_cast<__m128i *>(d[0]);
@@ -959,7 +962,7 @@ namespace librealsense
     // Native pixel formats //
     //////////////////////////
     const native_pixel_format pf_fe_raw8_unpatched_kernel = { 'RAW8', 1, 1, {  { false,               &copy_pixels<1>,                               { { RS2_STREAM_FISHEYE,        RS2_FORMAT_RAW8 } } } } };
-    const native_pixel_format pf_raw8                     = { 'GREY', 1, 1, {  { false,               &copy_pixels<1>,                               { { RS2_STREAM_FISHEYE,        RS2_FORMAT_RAW8 } } } } };
+    const native_pixel_format pf_raw8                     = { 'GREY', 1, 1, {  { true,                &copy_pixels<1>,                               { { RS2_STREAM_FISHEYE,        RS2_FORMAT_RAW8 } } } } };
     const native_pixel_format pf_rw16                     = { 'RW16', 1, 2, {  { false,               &copy_pixels<2>,                               { { RS2_STREAM_COLOR,          RS2_FORMAT_RAW16 } } } } };
     const native_pixel_format pf_bayer16                  = { 'BYR2', 1, 2, {  { false,               &copy_pixels<2>,                               { { RS2_STREAM_COLOR,          RS2_FORMAT_RAW16 } } } } };
     const native_pixel_format pf_rw10                     = { 'pRAA', 1, 1, {  { false,               &copy_raw10,                                   { { RS2_STREAM_COLOR,          RS2_FORMAT_RAW10 } } } } };
@@ -979,7 +982,6 @@ namespace librealsense
                                                                                { requires_processing, &copy_pixels<2>,                               { { RS2_STREAM_DEPTH,          RS2_FORMAT_Z16                    } } } } };
     const native_pixel_format pf_y8_l500                  = { 'GREY', 1, 1, {  { true,                &rotate_270_degrees_clockwise<1>,              { { RS2_STREAM_INFRARED,       RS2_FORMAT_Y8,   rotate_resolution } } },
                                                                                { requires_processing, &copy_pixels<1>,                               { { RS2_STREAM_INFRARED,       RS2_FORMAT_Y8 } } } } };
-
     const native_pixel_format pf_y8                       = { 'GREY', 1, 1, {  { requires_processing, &copy_pixels<1>,                             { { { RS2_STREAM_INFRARED, 1 },  RS2_FORMAT_Y8  } } } } };
     const native_pixel_format pf_y16                      = { 'Y16 ', 1, 2, {  { true,                &unpack_y16_from_y16_10,                     { { { RS2_STREAM_INFRARED, 1 },  RS2_FORMAT_Y16 } } } } };
     const native_pixel_format pf_y8i                      = { 'Y8I ', 1, 2, {  { true,                &unpack_y8_y8_from_y8i,                      { { { RS2_STREAM_INFRARED, 1 },  RS2_FORMAT_Y8  },

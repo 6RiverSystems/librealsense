@@ -25,13 +25,14 @@ namespace librealsense
         {
             HWReset = 0x20,
             GVD = 0x10,
-            GLD = 0x0f
+            GLD = 0x0f,
+            DPT_INTRINSICS_GET = 0x5A
         };
 
         enum gvd_fields
         {
             fw_version_offset = 12,
-            module_serial_offset = 64
+            module_serial_offset = 56
         };
 
         bool try_fetch_usb_device(std::vector<platform::usb_device_info>& devices,

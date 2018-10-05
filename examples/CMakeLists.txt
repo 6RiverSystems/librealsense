@@ -1,5 +1,5 @@
-#  minimum required cmake version: 3.8.0
-cmake_minimum_required(VERSION 3.8.0)
+#  minimum required cmake version: 3.1.0
+cmake_minimum_required(VERSION 3.1.0)
 
 project(RealsenseExamples)
 
@@ -58,7 +58,12 @@ if(BUILD_GRAPHICAL_EXAMPLES)
         include_directories(${GLFW_INCLUDE_DIR})
     endif()
 else()
-    set(DEPENDENCIES realsense2)
+    if(ANDROID_NDK_TOOLCHAIN_INCLUDED)
+        find_library(log-lib log)
+        set(DEPENDENCIES realsense2 log)
+    else()
+        set(DEPENDENCIES realsense2)
+    endif()
     if(NOT WIN32)
         list(APPEND DEPENDENCIES m ${LIBUSB1_LIBRARIES})
     endif()

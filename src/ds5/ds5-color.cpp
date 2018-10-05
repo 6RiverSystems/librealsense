@@ -170,9 +170,6 @@ namespace librealsense
                 else
                     return rs2_intrinsics{};
             });
-
-            if (video->get_width() == 640 && video->get_height() == 480 && video->get_format() == RS2_FORMAT_RGB8 && video->get_framerate() == 30)
-                video->make_default();
         }
 
         return results;

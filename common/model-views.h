@@ -114,6 +114,7 @@ namespace rs2
         static const textual_icon fix_up                   { u8"\uf062" };
         static const textual_icon minus                    { u8"\uf068" };
         static const textual_icon exclamation_triangle     { u8"\uf071" };
+        static const textual_icon shopping_cart            { u8"\uf07a" };
         static const textual_icon bar_chart                { u8"\uf080" };
         static const textual_icon upload                   { u8"\uf093" };
         static const textual_icon square_o                 { u8"\uf096" };
@@ -477,10 +478,10 @@ namespace rs2
             bool load_json_if_streaming = false,
             json_loading_func json_loading = [](std::function<void()> load) {load(); },
             bool draw_device_outline = true);
-        void handle_harware_events(const std::string& serialized_data);
+        void handle_hardware_events(const std::string& serialized_data);
 
         std::vector<std::shared_ptr<subdevice_model>> subdevices;
-
+        bool is_streaming() const;
         bool metadata_supported = false;
         bool get_curr_advanced_controls = true;
         device dev;
@@ -656,6 +657,11 @@ namespace rs2
             {
                 render_thread.join();
             }
+        }
+
+        bool is_rendering() const
+        {
+            return render_thread_active.load();
         }
 
         rs2::frameset get_points()

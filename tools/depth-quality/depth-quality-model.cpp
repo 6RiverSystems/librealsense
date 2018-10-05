@@ -62,8 +62,8 @@ namespace rs2
             // Use Infrared luminocity as a secondary video in case synthetic chroma is not supported
             {
                 rs2::config cfg_alt;
-                cfg_alt.enable_stream(RS2_STREAM_DEPTH, 0, 0, 0, RS2_FORMAT_Z16, requested_fps);
-                cfg_alt.enable_stream(RS2_STREAM_INFRARED, 1, 0, 0, RS2_FORMAT_Y8, requested_fps);
+                cfg_alt.enable_stream(RS2_STREAM_DEPTH, -1, 0, 0, RS2_FORMAT_Z16, requested_fps);
+                cfg_alt.enable_stream(RS2_STREAM_INFRARED, -1, 0, 0, RS2_FORMAT_Y8, requested_fps);
                 cfgs.emplace_back(cfg_alt);
             }
 
@@ -78,6 +78,7 @@ namespace rs2
                     }
                     catch (...)
                     {
+                        _pipe.stop();
                         valid_config = false;
                         if (!_device_in_use)
                         {
@@ -617,7 +618,7 @@ namespace rs2
                         ImGui::Text("Distance:");
                         if (ImGui::IsItemHovered())
                         {
-                            ImGui::SetTooltip("Estimated distance to the wall in mm");
+                            ImGui::SetTooltip("Estimated distance to an average within the ROI of the target (wall) in mm");
                         }
                         ImGui::SameLine(); ImGui::SetCursorPosX(col1);
                         ImGui::Text("%.2f mm", _metrics_model.get_last_metrics().distance);
@@ -764,6 +765,7 @@ namespace rs2
             _device_model->show_stream_selection = false;
             _depth_sensor_model = std::shared_ptr<rs2::subdevice_model>(
                 new subdevice_model(dev, dpt_sensor, _error_message));
+
             _depth_sensor_model->draw_streams_selector = false;
             _depth_sensor_model->draw_fps_selector = true;
 
@@ -897,8 +899,9 @@ namespace rs2
                     {
                         auto profile = f.get_profile();
                         auto stream_type = profile.stream_type();
+                        auto stream_format = profile.format();
 
-                        if (RS2_STREAM_DEPTH == stream_type)
+                        if ((RS2_STREAM_DEPTH == stream_type) && (RS2_FORMAT_Z16 == stream_format))
                         {
                             float su = 0, baseline = -1.f;
                             rs2_intrinsics intrin{};

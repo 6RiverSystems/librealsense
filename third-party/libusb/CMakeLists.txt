@@ -1,5 +1,7 @@
-#  minimum required cmake version: 3.8.0
-cmake_minimum_required(VERSION 3.8.0)
+# ubuntu 12.04 LTS cmake version 2.8.7
+# ubuntu 14.04 LTS cmake version 2.8.12.2
+# ubuntu 16.04 LTS cmake version 3.5.1	
+cmake_minimum_required(VERSION 2.8.3)
 
 project(usb)
 
@@ -46,8 +48,9 @@ set(LIBUSB_H
 )
 
 include_directories(
-  libusb/libusb
-  libusb/libusb/os
+  libusb
+  libusb/os
+  android
 )
 
 add_library(usb STATIC ${LIBUSB_C} ${LIBUSB_H})
@@ -67,6 +70,8 @@ endif()
 if((NOT APPLE) AND (NOT ANDROID) AND (NOT WIN32))
   TARGET_LINK_LIBRARIES(usb udev)
 endif()
+
+#set_target_properties(usb PROPERTIES PREFIX "")
 
 install(TARGETS ${PROJECT_NAME}
     EXPORT realsense2Targets
