@@ -17,7 +17,7 @@ namespace librealsense
     {
         std::mutex _mutex;
         std::map<stream_id, frame_holder> _last_set;
-        std::unique_ptr<single_consumer_queue<frame_holder>> _queue;
+        std::unique_ptr<single_consumer_frame_queue<frame_holder>> _queue;
         std::vector<int> _streams_ids;
         void handle_frame(frame_holder frame, synthetic_source_interface* source);
     public:
@@ -96,9 +96,6 @@ namespace librealsense
 
         pipeline_config(const pipeline_config& other)
         {
-            if (this == &other)
-                return;
-
             _device_request = other._device_request;
             _stream_requests = other._stream_requests;
             _enable_all_streams = other._enable_all_streams;

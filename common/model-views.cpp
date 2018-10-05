@@ -27,6 +27,7 @@
 #include <arcball_camera.h>
 
 constexpr const char* recommended_fw_url = "https://downloadcenter.intel.com/download/27522/Latest-Firmware-for-Intel-RealSense-D400-Product-Family?v=t";
+constexpr const char* store_url = "https://click.intel.com/";
 
 using namespace rs400;
 using namespace nlohmann;
@@ -799,7 +800,8 @@ namespace rs2
     {
         std::stringstream ss;
         ss << "##" << ((owner) ? owner->dev.get_info(RS2_CAMERA_INFO_NAME) : _name)
-            << "/" << ((owner) ? (*owner->s).get_info(RS2_CAMERA_INFO_NAME) : "_");
+            << "/" << ((owner) ? (*owner->s).get_info(RS2_CAMERA_INFO_NAME) : "_")
+            << "/" << (long long)this;
 
         subdevice_model::populate_options(options_metadata,
             ss.str().c_str(),owner , block, owner ? &owner->options_invalidated : nullptr, error_message);
@@ -918,7 +920,8 @@ namespace rs2
 
         std::stringstream ss;
         ss << "##" << dev.get_info(RS2_CAMERA_INFO_NAME)
-            << "/" << s->get_info(RS2_CAMERA_INFO_NAME);
+            << "/" << s->get_info(RS2_CAMERA_INFO_NAME)
+            << "/" << (long long)this;
         populate_options(options_metadata, ss.str().c_str(), this, s, &options_invalidated, error_message);
 
         try
@@ -1413,7 +1416,7 @@ namespace rs2
             {
                 if (viewer.synchronization_enable && (!viewer.is_3d_view || viewer.is_3d_depth_source(f) || viewer.is_3d_texture_source(f)))
                 {
-                    viewer.s(f);
+                    viewer.s.invoke(f);
                 }
                 else
                 {
@@ -2580,7 +2583,7 @@ namespace rs2
             float val{};
             if (texture->try_pick(x, y, &val))
             {
-                ss << ", *p: 0x" << std::hex << val;
+                ss << ", *p: 0x" << std::hex << static_cast<int>(round(val));
             }
 
             if (texture->get_last_frame().is<depth_frame>())
@@ -3233,19 +3236,35 @@ namespace rs2
             ImGuiWindowFlags_NoCollapse |
             ImGuiWindowFlags_NoTitleBar;
 
-        ImGui::PushFont(font_18);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, transparent);
         ImGui::SetNextWindowPos({ float(x), float(y) });
-        ImGui::SetNextWindowSize({ 250.f, 50.f });
+        ImGui::SetNextWindowSize({ 250.f, 70.f });
         ImGui::Begin("nostreaming_popup", nullptr, flags);
 
+        ImGui::PushFont(font_18);
         ImGui::PushStyleColor(ImGuiCol_Text, from_rgba(0x70, 0x8f, 0xa8, 0xff));
         ImGui::Text("Connect a RealSense Camera\nor Add Source");
         ImGui::PopStyleColor();
-
+        ImGui::PopFont();
+        ImGui::SetCursorPos({ 0, 43 });
+        ImGui::PushStyleColor(ImGuiCol_Button, dark_window_background);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dark_window_background);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, dark_window_background);
+        ImGui::PushStyleColor(ImGuiCol_Text, button_color + 0.25f);
+        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, button_color + 0.55f);
+        ImGui::Spacing();
+        std::string message = to_string() << textual_icons::shopping_cart << "  Buy Now";
+        if (ImGui::Button(message.c_str(), { 75, 20 }))
+        {
+            open_url(store_url);
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Go to click.intel.com");
+        }
+        ImGui::PopStyleColor(5);
         ImGui::End();
         ImGui::PopStyleColor();
-        ImGui::PopFont();
     }
 
     // Generate streams layout, creates a grid-like layout with factor amount of columns
@@ -5263,7 +5282,7 @@ namespace rs2
                 {
                     bool is_clicked = false;
                     assert(opt_model.opt == RS2_OPTION_VISUAL_PRESET);
-                    ImGui::Text("Presets: ");
+                    ImGui::Text("Preset: ");
                     if (ImGui::IsItemHovered())
                     {
                         ImGui::SetTooltip("Select a preset configuration (or use the load button)");
@@ -5322,12 +5341,16 @@ namespace rs2
                                     if (selected < static_cast<int>(labels.size() - files_labels.size()))
                                     {
                                         //Known preset was chosen
-                                        opt_model.value = opt_model.range.min + opt_model.range.step * selected;
+                                        auto new_val = opt_model.range.min + opt_model.range.step * selected;
                                         model.add_log(to_string() << "Setting " << opt_model.opt << " to "
                                             << opt_model.value << " (" << labels[selected] << ")");
-                                        opt_model.endpoint->set_option(opt_model.opt, opt_model.value);
-                                        is_clicked = true;
+
+                                        opt_model.endpoint->set_option(opt_model.opt, new_val);
+                                        
+                                        // Only apply preset to GUI if set_option was succesful
                                         selected_file_preset = "";
+                                        opt_model.value = new_val;
+                                        is_clicked = true;
                                     }
                                     else
                                     {
@@ -5657,7 +5680,7 @@ namespace rs2
                 ImGui::SetCursorPos({ rc.x, rc.y + line_h });
             }
 
-            ImGui::SetCursorPos({ rc.x + 225, rc.y - 127 });
+            ImGui::SetCursorPos({ rc.x + 225, rc.y - 107 });
 
             if (fw_version_less_than(fw_version, min_fw_version))
             {
@@ -6111,7 +6134,7 @@ namespace rs2
         }
     }
 
-    void device_model::handle_harware_events(const std::string& serialized_data)
+    void device_model::handle_hardware_events(const std::string& serialized_data)
     {
         //TODO: Move under hour glass
         std::string event_type = get_event_type(serialized_data);

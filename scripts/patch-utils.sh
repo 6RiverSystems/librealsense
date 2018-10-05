@@ -13,7 +13,7 @@ function require_package {
 	if [ $installed -eq 0 ];
 	then
 		echo -e "\e[31m - not found, installing now...\e[0m"
-		sudo apt-get install ${package_name}
+		sudo apt-get install ${package_name} -y
 		echo -e "\e[32mMissing package installed\e[0m"
 	else
 		echo -e "\e[32m - found\e[0m"
@@ -116,7 +116,7 @@ function try_module_insert {
 	backup_available=1
 	dependent_modules=""
 
-	printf "\e[32mReplacing\e[93m\e[1m%s \e[32m:\n\e[0m" ${module_name}
+	printf "\e[32mReplacing \e[93m\e[1m%s \e[32m:\n\e[0m" ${module_name}
 
 	#Check if the module is loaded, and if does - are there dependent kernel modules.
 	#Unload those first, then unload the requsted module and proceed with replacement
