@@ -332,6 +332,14 @@ namespace rs2
             error::handle(e);
         }
 
+
+        bool is_streaming() const
+        {
+            rs2_error* e = nullptr;
+            bool result = rs2_is_streaming(_sensor.get(), &e);
+            error::handle(e);
+            return result;
+        }
         /**
         * register notifications callback
         * \param[in] callback   notifications callback

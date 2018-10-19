@@ -119,6 +119,7 @@ void librealsense::record_sensor::stop()
 {
     m_sensor.stop();
 }
+
 bool librealsense::record_sensor::is_streaming() const
 {
     return m_sensor.is_streaming();
