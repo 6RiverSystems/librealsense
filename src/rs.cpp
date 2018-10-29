@@ -703,13 +703,12 @@ void rs2_stop(const rs2_sensor* sensor, rs2_error** error) BEGIN_API_CALL
 }
 HANDLE_EXCEPTIONS_AND_RETURN(, sensor)
 
-int rs2_is_streaming(const rs2_sensor* sensor, rs2_error** error)
-    BEGIN_API_CALL
-    {
-        VALIDATE_NOT_NULL(sensor);
-        return static_cast<int>(sensor->sensor->is_streaming());
-    }
-    HANDLE_EXCEPTIONS_AND_RETURN(0, sensor)
+int rs2_is_streaming(const rs2_sensor* sensor, rs2_error** error) BEGIN_API_CALL
+{
+    VALIDATE_NOT_NULL(sensor);
+    return static_cast<int>(sensor->sensor->is_streaming());
+}
+HANDLE_EXCEPTIONS_AND_RETURN(0, sensor)
 
 int rs2_supports_frame_metadata(const rs2_frame* frame, rs2_frame_metadata_value frame_metadata, rs2_error** error) BEGIN_API_CALL
 {
