@@ -336,7 +336,7 @@ namespace rs2
         bool is_streaming() const
         {
             rs2_error* e = nullptr;
-            bool result = rs2_is_streaming(_sensor.get(), &e);
+            bool result = static_cast<bool>(rs2_is_streaming(_sensor.get(), &e));
             error::handle(e);
             return result;
         }
