@@ -250,7 +250,7 @@ if(BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
 
-option(BUILD_UNIT_TESTS "Build realsense unit tests." ON)
+option(BUILD_UNIT_TESTS "Build realsense unit tests." OFF)
 if(BUILD_UNIT_TESTS)
   add_subdirectory(unit-tests)
 endif()
