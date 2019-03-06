@@ -199,7 +199,7 @@ include(GNUInstallDirs)
 
 option(BUILD_SHARED_LIBS "Build shared library" ON)
 if(BUILD_SHARED_LIBS)
-    set(CMAKE_VERBOSE_MAKEFILE ON)
+    #set(CMAKE_VERBOSE_MAKEFILE ON)
     add_library(realsense SHARED ${REALSENSE_CPP} ${REALSENSE_HPP} ${REALSENSE_DEF})
     set_target_properties(realsense PROPERTIES VERSION ${REALSENSE_VERSION_STRING}
                                     SOVERSION ${REALSENSE_VERSION_MAJOR})
