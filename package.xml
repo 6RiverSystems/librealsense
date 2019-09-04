@@ -27,7 +27,7 @@
   <buildtool_depend>catkin</buildtool_depend>
 
   <build_depend>pkg-config</build_depend>
-
+  <build_depend>std_msgs</build_depend>
   <depend>libusb-1.0-dev</depend>
   <depend>linux-headers-generic</depend>
   <depend>libssl-dev</depend>
