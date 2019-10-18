@@ -269,6 +269,7 @@ namespace librealsense
             }
             return tgt;
         }
+        return rs2::frame();
     }
 
     void  decimation_filter::update_output_profile(const rs2::frame& f)
