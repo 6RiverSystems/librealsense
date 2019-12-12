@@ -417,7 +417,7 @@ namespace rs2
     // return the distance between p and the line created by p1 and p2
     inline float point_to_line_dist(float2 p1, float2 p2, float2 p)
     {
-        float d = abs((p2.x - p1.x)*(p1.y - p.y) - (p1.x - p.x)*(p2.y - p1.y)) / sqrt((p2.x - p1.x)*(p2.x - p1.x) + (p2.y - p1.y)*(p2.y - p1.y));
+        float d = std::abs((p2.x - p1.x)*(p1.y - p.y) - (p1.x - p.x)*(p2.y - p1.y)) / sqrt((p2.x - p1.x)*(p2.x - p1.x) + (p2.y - p1.y)*(p2.y - p1.y));
         return d;
     }
 

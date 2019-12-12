@@ -1691,14 +1691,14 @@ namespace rs2
         auto x = static_cast<float>(-M_PI / 2);
         float _rx[4][4] = {
             { 1 , 0, 0, 0 },
-            { 0, cos(x), -sin(x), 0 },
-            { 0, sin(x), cos(x), 0 },
+            { 0, std::cos(x), -std::sin(x), 0 },
+            { 0, std::sin(x), std::cos(x), 0 },
             { 0, 0, 0, 1 }
         };
         auto z = static_cast<float>(M_PI);
         float _rz[4][4] = {
-            { cos(z), -sin(z),0, 0 },
-            { sin(z), cos(z), 0, 0 },
+            { std::cos(z), -std::sin(z),0, 0 },
+            { std::sin(z), std::cos(z), 0, 0 },
             { 0 , 0, 1, 0 },
             { 0, 0, 0, 1 }
         };
