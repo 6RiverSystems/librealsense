@@ -226,6 +226,8 @@ void rs2_open_multiple(rs2_sensor* device, const rs2_stream_profile** profiles, 
 */
 void rs2_close(const rs2_sensor* sensor, rs2_error** error);
 
+int rs2_is_streaming(const rs2_sensor* sensor, rs2_error** error);
+
 /**
 * start streaming from specified configured sensor
 * \param[in] sensor  RealSense device
