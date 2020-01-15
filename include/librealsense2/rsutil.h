@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <float.h>
+#include <cmath>
 
 /* Given a point in 3D space, compute the corresponding pixel coordinates in an image with no distortion or forward distortion coefficients produced by the same camera */
 static void rs2_project_point_to_pixel(float pixel[2], const struct rs2_intrinsics * intrin, const float point[3])
@@ -93,7 +94,7 @@ static void rs2_deproject_pixel_to_point(float point[3], const struct rs2_intrin
         for (int i = 0; i < 4; i++)
         {
             float f = theta*(1 + theta2*(intrin->coeffs[0] + theta2*(intrin->coeffs[1] + theta2*(intrin->coeffs[2] + theta2*intrin->coeffs[3])))) - rd;
-            if (abs(f) < FLT_EPSILON)
+            if (std::abs(f) < FLT_EPSILON)
             {
                 break;
             }
