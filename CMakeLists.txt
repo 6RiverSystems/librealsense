@@ -996,6 +996,7 @@ set_target_properties(realsense2
   PUBLIC_HEADER
   "include/librealsense2/rs.hpp;include/librealsense2/rs.h;include/librealsense2/h/rs_context.h;include/librealsense2/h/rs_device.h;include/librealsense2/h/rs_frame.h;include/librealsense2/h/rs_types.h;include/librealsense2/h/rs_sensor.h;include/librealsense2/h/rs_option.h;include/librealsense2/h/rs_processing.h;include/librealsense2/h/rs_record_playback.h;include/librealsense2/h/rs_pipeline.h;include/librealsense2/h/rs_internal.h;include/librealsense2/rsutil.h;include/librealsense2/rs_advanced_mode.h;include/librealsense2/h/rs_advanced_mode_command.h;include/librealsense2/hpp/rs_types.hpp;include/librealsense2/hpp/rs_context.hpp;include/librealsense2/hpp/rs_device.hpp;include/librealsense2/hpp/rs_frame.hpp;include/librealsense2/hpp/rs_processing.hpp;include/librealsense2/hpp/rs_pipeline.hpp;include/librealsense2/hpp/rs_record_playback.hpp;include/librealsense2/hpp/rs_sensor.hpp;include/librealsense2/hpp/rs_internal.hpp;include/librealsense2/rs_advanced_mode.hpp"
   )
+target_compile_options(realsense2 PRIVATE -Wno-unknown-pragmas -Wno-\#pragma-messages -Wno-unused-value -Wno-parentheses-equality -Wno-parentheses -Wno-gnu-zero-variadic-macro-arguments -Wno-four-char-constants -Wno-reorder -Wno-overloaded-virtual -Wno-absolute-value -Wno-unused-function -Wno-unused-const-variable -Wno-unused-private-field -Wno-inconsistent-missing-override)
 
 set(CMAKECONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/realsense2")
 
