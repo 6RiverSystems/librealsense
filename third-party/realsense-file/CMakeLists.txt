@@ -41,6 +41,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 #set_target_properties(${PROJECT_NAME} PROPERTIES VERSION "${LIBVERSION}" SOVERSION "${LIBSOVERSION}")
 
 set_target_properties (${PROJECT_NAME} PROPERTIES FOLDER Library)
+target_compile_options(${PROJECT_NAME} PRIVATE -Wno-gnu-zero-variadic-macro-arguments)
 
 set(CMAKECONFIG_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/../cmake/realsense2")
 
